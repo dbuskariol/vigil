@@ -83,13 +83,15 @@ public struct StatusReport: Codable, Sendable {
         public let agentRunning: Bool
         public let session: FeatureSession?
         public let lid: LidExtras?
+        public let stats: Stats
 
-        public init(feature: Feature, active: Bool, agentRunning: Bool, session: FeatureSession?, lid: LidExtras?) {
+        public init(feature: Feature, active: Bool, agentRunning: Bool, session: FeatureSession?, lid: LidExtras?, stats: Stats) {
             self.feature = feature
             self.active = active
             self.agentRunning = agentRunning
             self.session = session
             self.lid = lid
+            self.stats = stats
         }
 
         public struct LidExtras: Codable, Sendable {
@@ -101,6 +103,44 @@ public struct StatusReport: Codable, Sendable {
                 self.lastClosedSeconds = lastClosedSeconds
                 self.accumulatedClosedSeconds = accumulatedClosedSeconds
             }
+        }
+
+        /// Per-feature lifetime aggregates folded from the event log.
+        /// Always present; counters are 0 when no sessions have ended yet.
+        public struct Stats: Codable, Sendable {
+            public let sessionCount: Int
+            public let totalEnabledSeconds: Int
+            /// Lid-closed total across all lid-awake sessions. 0 for
+            /// caffeinate (it doesn't track lid state).
+            public let totalLidClosedSeconds: Int
+            public let longestSessionSeconds: Int
+            public let lastEnabledAt: Date?
+            public let danglingSessionCount: Int
+
+            public init(
+                sessionCount: Int,
+                totalEnabledSeconds: Int,
+                totalLidClosedSeconds: Int,
+                longestSessionSeconds: Int,
+                lastEnabledAt: Date?,
+                danglingSessionCount: Int
+            ) {
+                self.sessionCount = sessionCount
+                self.totalEnabledSeconds = totalEnabledSeconds
+                self.totalLidClosedSeconds = totalLidClosedSeconds
+                self.longestSessionSeconds = longestSessionSeconds
+                self.lastEnabledAt = lastEnabledAt
+                self.danglingSessionCount = danglingSessionCount
+            }
+
+            public static let zero = Stats(
+                sessionCount: 0,
+                totalEnabledSeconds: 0,
+                totalLidClosedSeconds: 0,
+                longestSessionSeconds: 0,
+                lastEnabledAt: nil,
+                danglingSessionCount: 0
+            )
         }
     }
 

@@ -54,9 +54,9 @@ struct MenuBarLabel: View {
         let base: String
         switch (caffeinateActive, lidAwakeActive) {
         case (false, false): base = "Vigil — idle"
-        case (true, false): base = "Vigil — Caffeinate active"
-        case (false, true): base = "Vigil — Lid-Awake active"
-        case (true, true): base = "Vigil — Caffeinate and Lid-Awake active"
+        case (true, false): base = "Vigil — Caffeinate: keep this Mac awake"
+        case (false, true): base = "Vigil — Lid-Awake: keep this Mac awake with the lid closed"
+        case (true, true): base = "Vigil — Never let this Mac sleep, even with the lid closed"
         }
         return hasPendingPermissions ? "\(base) (setup needs attention)" : base
     }
@@ -244,6 +244,8 @@ struct FeatureCard<Accessory: View>: View {
             }
 
             accessory()
+
+            FeatureStatsRow(vm: vm)
         }
         .padding(12)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
@@ -271,6 +273,117 @@ struct LidAwakeVisualToggles: View {
         }
         .disabled(lidAwakeActive || isBusy)
         .foregroundStyle(.secondary)
+    }
+}
+
+// MARK: - Feature stats row
+
+/// Compact stats display inside each FeatureCard, below the Duration row.
+///
+/// Two lines (either may be absent depending on state):
+///   1. Live session line — only when active. Updates once per second via
+///      `TimelineView` so "On for" and (for lid-awake) the lid-closed
+///      accumulator visibly tick up while the popover is open.
+///   2. Lifetime line — only when at least one ended session exists.
+///      Folded from the StatsLog event aggregate.
+/// Compact auxiliary stats footer inside each FeatureCard, below the
+/// accessory controls. Stable layout — no width jumps as numbers tick —
+/// achieved by a two-column Grid with right-aligned monospaced-digit
+/// values. Section headers are small-caps + tracked for the macOS
+/// settings-panel aesthetic.
+///
+/// Only renders when there's something to show:
+///   - Active session block: rendered only while `vm.session != nil`.
+///   - Lifetime block: rendered only when `stats.sessionCount > 0`.
+///   - Both absent → the whole view collapses (no divider, no padding).
+struct FeatureStatsRow: View {
+    @ObservedObject var vm: FeatureViewModel
+
+    var body: some View {
+        let hasActive = vm.session != nil
+        let hasLifetime = (vm.snapshot?.stats.sessionCount ?? 0) > 0
+
+        if hasActive || hasLifetime {
+            VStack(alignment: .leading, spacing: 10) {
+                Divider()
+                if let session = vm.session {
+                    sessionSection(session: session)
+                }
+                if let stats = vm.snapshot?.stats, stats.sessionCount > 0 {
+                    lifetimeSection(stats: stats)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sessionSection(session: FeatureSession) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SectionHeader(text: "This session")
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 3) {
+                    statRow("On for", value: DurationFormat.compact(
+                        seconds: max(0, Int(context.date.timeIntervalSince(session.enabledAt)))
+                    ))
+                    if vm.feature == .lidAwake, let lid = vm.snapshot?.lid {
+                        let inflight = lid.currentClosedSince.map {
+                            max(0, Int(context.date.timeIntervalSince($0)))
+                        } ?? 0
+                        let totalClosed = lid.accumulatedClosedSeconds + inflight
+                        if totalClosed > 0 {
+                            statRow("Lid closed", value: DurationFormat.compact(seconds: totalClosed))
+                        }
+                        if let last = lid.lastClosedSeconds, last > 0 {
+                            statRow("Last close", value: DurationFormat.compact(seconds: last))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func lifetimeSection(stats: StatusReport.FeatureSnapshot.Stats) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SectionHeader(text: "Lifetime")
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 3) {
+                statRow("Total enabled", value: DurationFormat.compact(seconds: stats.totalEnabledSeconds))
+                if vm.feature == .lidAwake && stats.totalLidClosedSeconds > 0 {
+                    statRow("Lid-closed", value: DurationFormat.compact(seconds: stats.totalLidClosedSeconds))
+                }
+                if stats.longestSessionSeconds > 0 {
+                    statRow("Longest", value: DurationFormat.compact(seconds: stats.longestSessionSeconds))
+                }
+                statRow("Sessions", value: "\(stats.sessionCount)")
+            }
+        }
+    }
+
+    /// One label/value row inside a Grid. Right-aligned value column keeps
+    /// layout stable as the value's char-count changes (e.g. "9s" → "10s").
+    /// monospacedDigit keeps the digits themselves from jittering.
+    @ViewBuilder
+    private func statRow(_ label: String, value: String) -> some View {
+        GridRow {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .font(.caption2.weight(.medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+}
+
+private struct SectionHeader: View {
+    let text: String
+    var body: some View {
+        Text(text.uppercased())
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .tracking(0.6)
     }
 }
 
@@ -460,9 +573,9 @@ struct HeaderRow: View {
     private var subtitleText: String {
         switch (coordinator.caffeinate.isActive, coordinator.lidAwake.isActive) {
         case (false, false): "Idle"
-        case (true, false): "Caffeinate active"
-        case (false, true): "Lid-Awake active"
-        case (true, true): "Caffeinate + Lid-Awake active"
+        case (true, false): "Keeping your Mac awake"
+        case (false, true): "Keeping your Mac awake, lid closed"
+        case (true, true): "Never letting your Mac sleep"
         }
     }
 }
