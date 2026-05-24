@@ -1,0 +1,16 @@
+.build/
+.swiftpm/
+DerivedData/
+.DS_Store
+dist/
+App/AppIcon.icns
+App/AppIcon.iconset/
+
+*.p12
+*.p8
+sparkle_private_key.txt
+.release-secrets/
+
+*.xcodeproj/
+xcuserdata/
+*.xcuserstate
