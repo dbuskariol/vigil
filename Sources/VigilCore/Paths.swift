@@ -61,6 +61,12 @@ public enum Paths {
         }
     }
 
+    /// Append-only event log for session statistics. See
+    /// `StatsLog` / `StatsAggregate` / `StatsEvent`.
+    public static var statsLogFile: URL {
+        appSupportDirectory.appendingPathComponent("stats-events.jsonl")
+    }
+
     /// Marker file written by the menu app's onboarding flow to persist the
     /// "Setup window should re-open at this step" hint across the move-and-
     /// relaunch jump. A file on disk (rather than `UserDefaults`) is the
