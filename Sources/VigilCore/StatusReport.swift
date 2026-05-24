@@ -94,6 +94,67 @@ public struct StatusReport: Codable, Sendable {
             self.stats = stats
         }
 
+        /// Metrics for the currently active session — derived through
+        /// the single `SessionMetrics.compute` source of truth. nil when
+        /// no session is active.
+        public func currentSessionMetrics(now: Date = Date()) -> SessionMetrics? {
+            guard let session else { return nil }
+            return SessionMetrics.compute(
+                session: session,
+                accumulatedLidClosedSeconds: TimeInterval(lid?.accumulatedClosedSeconds ?? 0),
+                lidClosedSince: lid?.currentClosedSince,
+                lastLidCloseSeconds: lid?.lastClosedSeconds.map(TimeInterval.init),
+                at: now,
+                tracksLid: feature == .lidAwake
+            )
+        }
+
+        /// Lifetime totals projected to include the in-flight session.
+        ///
+        /// `stats` is the on-disk truth — it only counts sessions that
+        /// have ended (and emitted a `sessionEnded` event). While a
+        /// session is active, callers that want a "live" lifetime view
+        /// (incrementing every second in the UI; growing in real time
+        /// in CLI `vigil status`) need the in-flight session's
+        /// contribution added on top. That's a pure read-side
+        /// projection — the on-disk aggregate stays untouched, the
+        /// projection just overlays one extra session.
+        ///
+        /// Routes through `currentSessionMetrics(now:)` so the in-flight
+        /// derivation matches what the agent will write to the log when
+        /// the session ends at this moment.
+        public func liveLifetime(now: Date = Date()) -> LiveLifetime {
+            var totalEnabled = stats.totalEnabledSeconds
+            var totalLidClosed = stats.totalLidClosedSeconds
+            var longest = stats.longestSessionSeconds
+            var sessions = stats.sessionCount
+            var inFlightSessionSeconds: Int?
+            var inFlightLidClosedSeconds: Int?
+
+            if let metrics = currentSessionMetrics(now: now) {
+                let elapsed = Int(metrics.elapsedSeconds)
+                totalEnabled += elapsed
+                longest = max(longest, elapsed)
+                sessions += 1
+                inFlightSessionSeconds = elapsed
+
+                if let lidClosed = metrics.lidClosedSeconds {
+                    let lidInt = Int(lidClosed)
+                    totalLidClosed += lidInt
+                    inFlightLidClosedSeconds = lidInt
+                }
+            }
+
+            return LiveLifetime(
+                totalEnabledSeconds: totalEnabled,
+                totalLidClosedSeconds: totalLidClosed,
+                longestSessionSeconds: longest,
+                sessionCount: sessions,
+                inFlightSessionSeconds: inFlightSessionSeconds,
+                inFlightLidClosedSeconds: inFlightLidClosedSeconds
+            )
+        }
+
         public struct LidExtras: Codable, Sendable {
             public let currentClosedSince: Date?
             public let lastClosedSeconds: Int?
@@ -107,6 +168,8 @@ public struct StatusReport: Codable, Sendable {
 
         /// Per-feature lifetime aggregates folded from the event log.
         /// Always present; counters are 0 when no sessions have ended yet.
+        /// **On-disk truth only** — does NOT include the in-flight session.
+        /// Use `liveLifetime(now:)` for read-side projection that does.
         public struct Stats: Codable, Sendable {
             public let sessionCount: Int
             public let totalEnabledSeconds: Int
@@ -141,6 +204,44 @@ public struct StatusReport: Codable, Sendable {
                 lastEnabledAt: nil,
                 danglingSessionCount: 0
             )
+        }
+
+        /// Read-side projection: persisted aggregate + in-flight session.
+        /// Returned from `liveLifetime(now:)`. Has no on-disk
+        /// representation; computed pure from `Stats` + `session` + `lid`.
+        public struct LiveLifetime: Sendable, Equatable {
+            public let totalEnabledSeconds: Int
+            public let totalLidClosedSeconds: Int
+            public let longestSessionSeconds: Int
+            public let sessionCount: Int
+            /// Seconds the currently-active session has been on, or nil
+            /// if no session is active. Lets callers display "this
+            /// projection includes an in-flight session of X" if useful.
+            public let inFlightSessionSeconds: Int?
+            /// Seconds the lid has been closed during the in-flight
+            /// session (accumulated + currently-closed delta). nil for
+            /// caffeinate or when no session is active.
+            public let inFlightLidClosedSeconds: Int?
+
+            public init(
+                totalEnabledSeconds: Int,
+                totalLidClosedSeconds: Int,
+                longestSessionSeconds: Int,
+                sessionCount: Int,
+                inFlightSessionSeconds: Int?,
+                inFlightLidClosedSeconds: Int?
+            ) {
+                self.totalEnabledSeconds = totalEnabledSeconds
+                self.totalLidClosedSeconds = totalLidClosedSeconds
+                self.longestSessionSeconds = longestSessionSeconds
+                self.sessionCount = sessionCount
+                self.inFlightSessionSeconds = inFlightSessionSeconds
+                self.inFlightLidClosedSeconds = inFlightLidClosedSeconds
+            }
+
+            public var hasInFlightSession: Bool {
+                inFlightSessionSeconds != nil
+            }
         }
     }
 
