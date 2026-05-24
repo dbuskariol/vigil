@@ -55,8 +55,10 @@ enum Helper {
     }
 }
 
-/// Installs and revokes the privileged helper / sudoers entry. Identical
-/// scope to v0.1.0-beta.1: three allowlisted verbs, `visudo -cf`-validated.
+/// Installs and revokes the privileged helper / sudoers entry. The sudoers
+/// rule is narrow: only the verbs in `VigilIdentifiers.sudoersVerbs`, with
+/// the in-binary `pmset` allowlist as a second layer. Validated with
+/// `visudo -cf`.
 enum ApprovedHelperInstaller {
     static let privilegedHelperPath = VigilIdentifiers.privilegedHelperPath
 
@@ -74,32 +76,8 @@ enum ApprovedHelperInstaller {
         }.value
     }
 
-    static func installedHelperVersion() async -> String? {
-        await Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-            process.arguments = ["-n", privilegedHelperPath, "privileged-version"]
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = Pipe()
-
-            do {
-                try process.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                guard process.terminationStatus == 0 else { return nil }
-                let output = String(data: data, encoding: .utf8) ?? ""
-                let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? nil : trimmed
-            } catch {
-                return nil
-            }
-        }.value
-    }
-
     private static func installScript(helperPath: String) -> String {
-        let sudoersLine = "\(NSUserName()) ALL=(root) NOPASSWD: \(privilegedHelperPath) privileged-pmset-batch *, \(privilegedHelperPath) approval-status, \(privilegedHelperPath) privileged-version"
+        let sudoersLine = VigilIdentifiers.sudoersLine(for: NSUserName())
         return """
         set -e
         install -d -o root -g wheel -m 755 /Library/PrivilegedHelperTools

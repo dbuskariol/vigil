@@ -34,12 +34,14 @@ enum Status {
             let session = f == .lidAwake ? lidSession : caffSession
 
             // "Active" means the feature is providing protection right now.
-            // For lid-awake we also accept the v0.1.0 indicator (SleepDisabled
-            // is set) because the pmset profile is the actual user-facing
-            // effect; the assertion-agent running is corroborating evidence.
+            // For lid-awake we also accept the `SleepDisabled` indicator
+            // (pmset's actual user-facing effect); the assertion agent
+            // corroborates it.
             let active: Bool
             switch f {
             case .lidAwake:
+                // pmset's `disablesleep` flag is the actual user-facing
+                // effect; the assertion agent corroborates it.
                 active = (power.sleepDisabled ?? false) && (agentRunning || sentinelExists)
             case .caffeinate:
                 active = agentRunning && sentinelExists
@@ -66,6 +68,16 @@ enum Status {
             let trimmed = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }()
+        let installedIPCContractVersion: Int? = {
+            guard helperApproved else { return nil }
+            let result = try? Shell.run(
+                "/usr/bin/sudo",
+                ["-n", VigilIdentifiers.privilegedHelperPath, "privileged-ipc-version"],
+                requireSuccess: false
+            )
+            guard let r = result, r.status == 0 else { return nil }
+            return Int(r.output.trimmingCharacters(in: .whitespacesAndNewlines))
+        }()
 
         return StatusReport(
             version: VigilVersion.value,
@@ -85,7 +97,12 @@ enum Status {
                 brightness: KeyboardBacklight.capture()
             ),
             features: features,
-            helper: .init(approved: helperApproved, installedVersion: installedHelperVersion)
+            helper: .init(
+                approved: helperApproved,
+                installedVersion: installedHelperVersion,
+                installedIPCContractVersion: installedIPCContractVersion,
+                expectedIPCContractVersion: VigilIdentifiers.IPCContractVersion
+            )
         )
     }
 
@@ -147,6 +164,14 @@ enum Status {
         print("Approved helper: \(report.helper.approved ? "installed" : "not installed")")
         if let version = report.helper.installedVersion {
             print("Approved helper version: \(version)")
+        }
+        if let installed = report.helper.installedIPCContractVersion {
+            print("IPC contract version: \(installed) (expected \(report.helper.expectedIPCContractVersion))")
+            if !report.helper.contractMatches {
+                print("  (contract version mismatch — re-approve to update sudoers rule)")
+            }
+        } else if report.helper.approved {
+            print("IPC contract version: unknown (sudoers rule predates contract probe; re-approve to update)")
         }
 
         if verbose {

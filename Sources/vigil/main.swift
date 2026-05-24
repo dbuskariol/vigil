@@ -51,18 +51,9 @@ func dispatch(_ arguments: [String]) -> ExitCode {
         return .ok
     }
 
-    // Run legacy migration once on the first user-invocation that reaches
-    // this dispatcher. The marker is a file on disk so it survives
-    // multi-process invocation. Hold and privileged-* invocations skip it
-    // because those run inside long-lived contexts where migration is not
-    // appropriate.
-    if arguments.first != "hold"
-        && arguments.first != "privileged-pmset-batch"
-        && arguments.first != "privileged-version" {
-        LegacyMigration.runIfNeeded(bootoutAgent: { label in
-            LaunchAgent.bootout(label: label)
-        })
-    }
+    // Hold and privileged-* invocations skip any user-facing setup and go
+    // straight through the dispatch — they run inside long-lived agent or
+    // sudo contexts.
 
     do {
         switch arguments.first ?? "status" {
@@ -102,6 +93,9 @@ func dispatch(_ arguments: [String]) -> ExitCode {
 
         case "privileged-version":
             Privilege.printPrivilegedVersion()
+
+        case "privileged-ipc-version":
+            Privilege.printPrivilegedIPCContractVersion()
 
         default:
             throw RuntimeError.unknownCommand(arguments.first ?? "")
@@ -166,15 +160,9 @@ func runCaffeinate(_ arguments: [String]) throws {
 }
 
 func runHold(_ arguments: [String]) throws {
-    // Legacy-compatibility shim: v0.1.0-beta.1's LaunchAgent plist invokes
-    // `vigil hold` with no feature argument. If the .app bundle is replaced
-    // in place (e.g. by manual DMG drag-and-drop rather than Sparkle), the
-    // old plist may briefly invoke the new CLI before LegacyMigration runs.
-    // Treat bare `hold` as `hold lid-awake` so legacy invocation never
-    // crashes loudly. Removed in a future release.
-    let featureName = arguments.first ?? Feature.lidAwake.rawValue
-    guard let feature = Feature(rawValue: featureName) else {
-        throw RuntimeError.unknownCommand("hold \(featureName)")
+    guard let featureName = arguments.first,
+          let feature = Feature(rawValue: featureName) else {
+        throw RuntimeError.unknownCommand("hold \(arguments.first ?? "")")
     }
     HoldEngine.run(feature: feature)
 }

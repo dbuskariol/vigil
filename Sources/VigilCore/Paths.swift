@@ -21,7 +21,6 @@ public enum Paths {
     }
 
     // ---- Lid-awake's privileged-pmset restore state ---------------------------
-    // Preserved verbatim from v0.1.0-beta.1.
 
     public static var pmsetSnapshotFile: URL {
         appSupportDirectory.appendingPathComponent("state.json")
@@ -62,11 +61,13 @@ public enum Paths {
         }
     }
 
-    /// Marker file written once by LegacyMigration so the upgrade work isn't
-    /// repeated. Stored on disk (not UserDefaults) because the CLI and menu
-    /// app live in different defaults domains.
-    public static var legacyMigrationMarker: URL {
-        appSupportDirectory.appendingPathComponent(".migrated-0.2.0")
+    /// Marker file written by the menu app's onboarding flow to persist the
+    /// "Setup window should re-open at this step" hint across the move-and-
+    /// relaunch jump. A file on disk (rather than `UserDefaults`) is the
+    /// correct vehicle for cross-process handoff: `UserDefaults` writes go
+    /// through `cfprefsd` asynchronously and can lag a deliberate relaunch.
+    public static var onboardingResumeMarker: URL {
+        appSupportDirectory.appendingPathComponent("onboarding-resume-step")
     }
 
     public static func ensureAppSupportDirectoryExists() throws {
