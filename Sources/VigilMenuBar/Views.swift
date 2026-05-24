@@ -9,16 +9,20 @@ import VigilCore
 /// happening. A small orange dot overlays the symbol whenever any required
 /// permission is missing — gives the user a heads-up before they even open
 /// the popover.
+///
+/// SwiftUI's `MenuBarExtra` label is rendered as a template image by
+/// default, which strips colour. To get a green active-state tint that
+/// actually shows up, we build an explicit `NSImage` with
+/// `isTemplate = false` and tint it via Core Graphics compositing; the
+/// idle state still uses a template image so it follows the user's
+/// menu-bar tinting.
 struct MenuBarLabel: View {
     let caffeinateActive: Bool
     let lidAwakeActive: Bool
     let hasPendingPermissions: Bool
 
     var body: some View {
-        Image(systemName: symbolName)
-            .symbolRenderingMode(.monochrome)
-            .font(.system(size: 18, weight: .semibold))
-            .frame(width: 22, height: 22)
+        Image(nsImage: renderedImage())
             .overlay(alignment: .topTrailing) {
                 if hasPendingPermissions {
                     Circle()
@@ -28,8 +32,13 @@ struct MenuBarLabel: View {
                         .accessibilityHidden(true)
                 }
             }
+            .frame(width: 22, height: 22)
             .accessibilityLabel(tooltip)
             .help(tooltip)
+    }
+
+    private var isActive: Bool {
+        caffeinateActive || lidAwakeActive
     }
 
     private var symbolName: String {
@@ -37,7 +46,7 @@ struct MenuBarLabel: View {
         case (false, false): "moon.zzz"
         case (true, false): "eye.fill"
         case (false, true): "laptopcomputer"
-        case (true, true): "sun.max.fill"
+        case (true, true): "bolt.fill"
         }
     }
 
@@ -50,6 +59,39 @@ struct MenuBarLabel: View {
         case (true, true): base = "Vigil — Caffeinate and Lid-Awake active"
         }
         return hasPendingPermissions ? "\(base) (setup needs attention)" : base
+    }
+
+    /// Build the menu-bar image: template (system-tinted) when idle, green
+    /// tint when any feature is active.
+    private func renderedImage() -> NSImage {
+        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
+        guard let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(config) else {
+            return NSImage()
+        }
+
+        if !isActive {
+            base.isTemplate = true   // let the system tint it (light/dark menu bar)
+            return base
+        }
+
+        // Active: composite the green tint behind the symbol shape using
+        // destinationIn — produces a solid-green silhouette of the SF
+        // Symbol's shape, isTemplate = false so SwiftUI keeps the colour.
+        let size = base.size
+        let tinted = NSImage(size: size, flipped: false) { rect in
+            NSColor.systemGreen.set()
+            rect.fill()
+            base.draw(
+                in: rect,
+                from: NSRect(origin: .zero, size: size),
+                operation: .destinationIn,
+                fraction: 1.0
+            )
+            return true
+        }
+        tinted.isTemplate = false
+        return tinted
     }
 }
 
@@ -315,16 +357,18 @@ struct FooterBar: View {
             .disabled(coordinator.isBusy)
             .buttonStyle(.plain)
 
-            if updateController.isConfigured {
-                Button {
+            Button {
+                if updateController.isConfigured {
                     updateController.checkForUpdates()
-                } label: {
-                    Image(systemName: "arrow.down.circle")
                 }
-                .help("Check for updates")
-                .disabled(coordinator.isBusy || !updateController.canCheckForUpdates)
-                .buttonStyle(.plain)
+            } label: {
+                Image(systemName: "arrow.down.circle")
             }
+            .help(updateController.isConfigured
+                  ? "Check for updates"
+                  : "Auto-updates are configured in signed release builds only")
+            .disabled(coordinator.isBusy || !updateController.canCheckForUpdates)
+            .buttonStyle(.plain)
 
             if anyFeatureActive {
                 Button {

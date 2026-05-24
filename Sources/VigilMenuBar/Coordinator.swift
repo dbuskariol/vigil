@@ -328,9 +328,11 @@ final class AppCoordinator: ObservableObject {
                 _ = await Helper.run(["caffeinate"] + args + ["--force-battery"])
             case .lidAwake:
                 _ = await Helper.run([
-                    "lid-awake",
+                    "lid-awake"
+                ] + args + [
+                    "--force-battery",
                     helperApproved ? Helper.approvedHelperFlag : Helper.adminPromptFlag
-                ] + args + ["--force-battery"])
+                ])
             }
         }
     }
@@ -347,17 +349,21 @@ final class AppCoordinator: ObservableObject {
     private func runAction(feature: Feature, build: @escaping ([String]) -> [String]) {
         Task {
             isBusy = true
-            let preface: [String]
+            // Build "vigil <feature> <verb> [flags...]" with the privilege
+            // flag appended at the end so the verb is always argv[2].
+            let baseArgs: [String] = [feature == .lidAwake ? "lid-awake" : "caffeinate"]
+            let withVerb = build(baseArgs)
+            let needsPrivilege = feature == .lidAwake
+            let privilegeFlag = helperApproved ? Helper.approvedHelperFlag : Helper.adminPromptFlag
+            let finalArgs = needsPrivilege ? (withVerb + [privilegeFlag]) : withVerb
+
             switch feature {
             case .lidAwake:
-                preface = ["lid-awake", helperApproved ? Helper.approvedHelperFlag : Helper.adminPromptFlag]
                 lastMessage = helperApproved ? "Applying changes" : "Waiting for administrator approval"
             case .caffeinate:
-                preface = ["caffeinate"]
                 lastMessage = "Applying changes"
             }
-            let args = build(preface)
-            let result = await Helper.run(args)
+            let result = await Helper.run(finalArgs)
             lastMessage = result.status == 0 ? "Updated" : result.output
             isBusy = false
             await refresh(showMessage: false, reArmIfNeeded: false)
@@ -365,11 +371,12 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func lidAwakeArguments(verb: String, duration: Duration, batteryForce: Bool) -> [String] {
-        var args = ["lid-awake", helperApproved ? Helper.approvedHelperFlag : Helper.adminPromptFlag, verb]
+        var args = ["lid-awake", verb]
         if verb == "on" {
             args += ["--duration", duration.rawValue]
             if batteryForce { args.append("--force-battery") }
         }
+        args.append(helperApproved ? Helper.approvedHelperFlag : Helper.adminPromptFlag)
         return args
     }
 

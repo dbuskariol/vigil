@@ -110,8 +110,8 @@ func dispatch(_ arguments: [String]) -> ExitCode {
 // MARK: - Feature subcommand handlers
 
 func runLidAwake(_ arguments: [String]) throws {
-    let verb = arguments.first ?? "status"
-    let rest = Array(arguments.dropFirst())
+    let verb = firstNonFlag(arguments) ?? "status"
+    let rest = arguments.filter { $0 != verb }
     let duration = parseDuration(rest)
     let forceBattery = rest.contains("--force-battery")
 
@@ -135,8 +135,8 @@ func runLidAwake(_ arguments: [String]) throws {
 }
 
 func runCaffeinate(_ arguments: [String]) throws {
-    let verb = arguments.first ?? "status"
-    let rest = Array(arguments.dropFirst())
+    let verb = firstNonFlag(arguments) ?? "status"
+    let rest = arguments.filter { $0 != verb }
     let duration = parseDuration(rest)
     let forceBattery = rest.contains("--force-battery")
 
@@ -160,14 +160,23 @@ func runCaffeinate(_ arguments: [String]) throws {
 }
 
 func runHold(_ arguments: [String]) throws {
-    guard let featureName = arguments.first,
+    guard let featureName = firstNonFlag(arguments),
           let feature = Feature(rawValue: featureName) else {
         throw RuntimeError.unknownCommand("hold \(arguments.first ?? "")")
     }
     HoldEngine.run(feature: feature)
 }
 
-// MARK: - Duration parsing
+// MARK: - Argument parsing helpers
+
+/// Find the first argument that is not a `--flag`. The verb-vs-flag
+/// distinction is positional in spirit but we don't enforce ordering —
+/// privilege flags (`--approved-helper`, `--admin-prompt`) and the like
+/// are read globally via `CommandLine.arguments.contains(...)` and can
+/// appear anywhere.
+private func firstNonFlag(_ arguments: [String]) -> String? {
+    arguments.first { !$0.hasPrefix("--") }
+}
 
 func parseDuration(_ arguments: [String]) -> Duration {
     guard let index = arguments.firstIndex(of: "--duration"),
