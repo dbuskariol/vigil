@@ -292,69 +292,99 @@ struct LidAwakeVisualToggles: View {
 /// values. Section headers are small-caps + tracked for the macOS
 /// settings-panel aesthetic.
 ///
+/// Wrapped in a `DisclosureGroup` (collapsed by default) so the popover
+/// stays compact for the common case. The expanded state lives in local
+/// `@State`, so each popover-open starts collapsed — stats are
+/// curiosity-on-demand, not always-visible.
+///
 /// Only renders when there's something to show:
 ///   - Active session block: rendered only while `vm.session != nil`.
 ///   - Lifetime block: rendered only when `stats.sessionCount > 0`.
 ///   - Both absent → the whole view collapses (no divider, no padding).
 struct FeatureStatsRow: View {
     @ObservedObject var vm: FeatureViewModel
+    @State private var expanded = false
 
     var body: some View {
         let hasActive = vm.session != nil
         let hasLifetime = (vm.snapshot?.stats.sessionCount ?? 0) > 0
 
         if hasActive || hasLifetime {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
                 Divider()
-                if let session = vm.session {
-                    sessionSection(session: session)
-                }
-                if let stats = vm.snapshot?.stats, stats.sessionCount > 0 {
-                    lifetimeSection(stats: stats)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func sessionSection(session: FeatureSession) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            SectionHeader(text: "This session")
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 3) {
-                    statRow("On for", value: DurationFormat.compact(
-                        seconds: max(0, Int(context.date.timeIntervalSince(session.enabledAt)))
-                    ))
-                    if vm.feature == .lidAwake, let lid = vm.snapshot?.lid {
-                        let inflight = lid.currentClosedSince.map {
-                            max(0, Int(context.date.timeIntervalSince($0)))
-                        } ?? 0
-                        let totalClosed = lid.accumulatedClosedSeconds + inflight
-                        if totalClosed > 0 {
-                            statRow("Lid closed", value: DurationFormat.compact(seconds: totalClosed))
+                InlineDisclosure(isExpanded: $expanded) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chart.bar.xaxis")
+                            .font(.caption2)
+                        Text("Stats")
+                            .font(.caption2.weight(.semibold))
+                            .tracking(0.4)
+                    }
+                } content: {
+                    // Single TimelineView wraps both sections so the
+                    // session counter AND the lifetime totals (which
+                    // include the in-flight session via the read-side
+                    // projection on FeatureSnapshot.liveLifetime) tick
+                    // together in real time.
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        VStack(alignment: .leading, spacing: 10) {
+                            if let snapshot = vm.snapshot, let session = vm.session {
+                                sessionSection(snapshot: snapshot, session: session, now: context.date)
+                            }
+                            if let snapshot = vm.snapshot,
+                               snapshot.stats.sessionCount > 0 || snapshot.session != nil {
+                                lifetimeSection(snapshot: snapshot, now: context.date)
+                            }
                         }
-                        if let last = lid.lastClosedSeconds, last > 0 {
-                            statRow("Last close", value: DurationFormat.compact(seconds: last))
-                        }
+                        .padding(.top, 6)
                     }
                 }
+                .foregroundStyle(.tertiary)
             }
         }
     }
 
     @ViewBuilder
-    private func lifetimeSection(stats: StatusReport.FeatureSnapshot.Stats) -> some View {
+    private func sessionSection(
+        snapshot: StatusReport.FeatureSnapshot,
+        session: FeatureSession,
+        now: Date
+    ) -> some View {
+        // Pull every value from the single source of truth so the row
+        // matches the lifetime overlay (and the agent's eventual
+        // sessionEnded event) exactly.
+        let metrics = snapshot.currentSessionMetrics(now: now)
+            ?? SessionMetrics(elapsedSeconds: 0, lidClosedSeconds: nil, lastLidCloseSeconds: nil)
+        VStack(alignment: .leading, spacing: 4) {
+            SectionHeader(text: "This session")
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 3) {
+                statRow("On for", value: DurationFormat.compact(
+                    seconds: Int(metrics.elapsedSeconds)
+                ))
+                if let lidClosed = metrics.lidClosedSeconds, Int(lidClosed) > 0 {
+                    statRow("Lid closed", value: DurationFormat.compact(seconds: Int(lidClosed)))
+                }
+                if let last = metrics.lastLidCloseSeconds, Int(last) > 0 {
+                    statRow("Last close", value: DurationFormat.compact(seconds: Int(last)))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func lifetimeSection(snapshot: StatusReport.FeatureSnapshot, now: Date) -> some View {
+        let live = snapshot.liveLifetime(now: now)
         VStack(alignment: .leading, spacing: 4) {
             SectionHeader(text: "Lifetime")
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 3) {
-                statRow("Total enabled", value: DurationFormat.compact(seconds: stats.totalEnabledSeconds))
-                if vm.feature == .lidAwake && stats.totalLidClosedSeconds > 0 {
-                    statRow("Lid-closed", value: DurationFormat.compact(seconds: stats.totalLidClosedSeconds))
+                statRow("Total enabled", value: DurationFormat.compact(seconds: live.totalEnabledSeconds))
+                if snapshot.feature == .lidAwake && live.totalLidClosedSeconds > 0 {
+                    statRow("Lid-closed", value: DurationFormat.compact(seconds: live.totalLidClosedSeconds))
                 }
-                if stats.longestSessionSeconds > 0 {
-                    statRow("Longest", value: DurationFormat.compact(seconds: stats.longestSessionSeconds))
+                if live.longestSessionSeconds > 0 {
+                    statRow("Longest", value: DurationFormat.compact(seconds: live.longestSessionSeconds))
                 }
-                statRow("Sessions", value: "\(stats.sessionCount)")
+                statRow("Sessions", value: "\(live.sessionCount)")
             }
         }
     }
@@ -387,13 +417,61 @@ private struct SectionHeader: View {
     }
 }
 
+/// A compact, custom-styled disclosure row. The ENTIRE row is a click
+/// target (label + chevron + the empty space between them), the chevron
+/// inherits the enclosing `.foregroundStyle(...)` so it always matches
+/// the label color, and the open/close transition is a snappy 180ms
+/// animation. Plain button style — no system chrome.
+///
+/// Reused for the per-feature Stats row inside each FeatureCard and for
+/// the Diagnostics row at the bottom of the popover.
+struct InlineDisclosure<Label: View, Content: View>: View {
+    @Binding var isExpanded: Bool
+    @ViewBuilder var label: () -> Label
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.snappy(duration: 0.18)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    label()
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content()
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+}
+
 // MARK: - Diagnostics disclosure
 
 struct DiagnosticsDisclosure: View {
     let report: StatusReport?
+    @State private var expanded = false
 
     var body: some View {
-        DisclosureGroup("Diagnostics") {
+        InlineDisclosure(isExpanded: $expanded) {
+            HStack(spacing: 6) {
+                Image(systemName: "stethoscope")
+                    .font(.caption2)
+                Text("Diagnostics")
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.4)
+            }
+        } content: {
             VStack(alignment: .leading, spacing: 4) {
                 if let report {
                     diagnosticsRow("Power source", report.battery.source)
@@ -410,9 +488,8 @@ struct DiagnosticsDisclosure: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.top, 4)
         }
-        .font(.caption.weight(.semibold))
+        .foregroundStyle(.tertiary)
     }
 
     private func lidLabel(_ closed: Bool?) -> String {
@@ -431,6 +508,7 @@ struct DiagnosticsDisclosure: View {
             Spacer()
             Text(value)
                 .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
                 .textSelection(.enabled)
         }
     }
