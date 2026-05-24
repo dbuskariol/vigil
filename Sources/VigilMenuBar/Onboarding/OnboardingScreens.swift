@@ -446,7 +446,7 @@ struct ScreenDone: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("You're set.")
+            Text("Here's what to do from here.")
                 .font(.system(size: 14, weight: .semibold))
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 10) {
