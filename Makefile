@@ -33,7 +33,7 @@ BUILD              ?= 1
 CODESIGN_IDENTITY  ?= -
 
 # Notarization profile. Stored in login keychain via `make signing-setup`.
-APPLE_KEYCHAIN_PROFILE ?= vigil-notary
+APPLE_KEYCHAIN_PROFILE ?= vigil
 
 # Sparkle (both must be set for the updater to activate at runtime —
 # see Sources/VigilMenuBar/main.swift configurationIsPresent).
@@ -126,7 +126,7 @@ signing-setup:
 		echo "(Copy .env.signing.example to .env.signing, fill them in, then re-run.)"; \
 		exit 1; \
 	fi
-	xcrun notarytool store-credentials "$(APPLE_KEYCHAIN_PROFILE)" \
+	@xcrun notarytool store-credentials "$(APPLE_KEYCHAIN_PROFILE)" \
 		--apple-id "$(APPLE_ID)" \
 		--team-id "$(APPLE_TEAM_ID)" \
 		--password "$(APPLE_APP_SPECIFIC_PASSWORD)"
