@@ -83,10 +83,10 @@ Vigil takes administrator privileges in two ways, both **only for Lid-Awake** (C
 1. **One-time `Approve All` flow.** The menu app runs `do shell script with administrator privileges` (`NSAppleScript` + macOS SecurityAgent). The privileged shell installs the `vigil` CLI to `/Library/PrivilegedHelperTools/com.vigil.app.helper` (root-owned, `0755`) and writes a sudoers drop-in at `/etc/sudoers.d/vigil-<uid>` (root-owned, `0440`, validated with `visudo -cf`). The sudoers rule is intentionally narrow:
 
    ```
-   <user> ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.vigil.app.helper privileged-pmset-batch *, /Library/PrivilegedHelperTools/com.vigil.app.helper approval-status, /Library/PrivilegedHelperTools/com.vigil.app.helper privileged-version
+   <user> ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.vigil.app.helper privileged-pmset-batch *, /Library/PrivilegedHelperTools/com.vigil.app.helper approval-status, /Library/PrivilegedHelperTools/com.vigil.app.helper privileged-version, /Library/PrivilegedHelperTools/com.vigil.app.helper privileged-ipc-version
    ```
 
-   Three verbs only: a `pmset` batch (with an in-binary allowlist of `disablesleep`, `sleep`, `disksleep`, `ttyskeepawake`, `tcpkeepalive`), an `approval-status` probe, and a `privileged-version` probe used for upgrade-mismatch detection. The allowlist is enforced inside the helper (see `Sources/vigil/Privilege.swift`'s `argumentsAreAllowedPMSetBatch`), so the `privileged-pmset-batch *` sudoers entry is still bounded.
+   Four verbs only: a `pmset` batch (with an in-binary allowlist of `disablesleep`, `sleep`, `disksleep`, `ttyskeepawake`, `tcpkeepalive`), an `approval-status` probe, a `privileged-version` probe, and a `privileged-ipc-version` probe used for IPC-contract handshake. The allowlist is enforced inside the helper (see `Sources/vigil/Privilege.swift`'s `argumentsAreAllowedPMSetBatch`), so the `privileged-pmset-batch *` sudoers entry is still bounded.
 
    **Time-limited Lid-Awake requires approval** so that when the timer expires the agent can restore the saved `pmset` profile non-interactively. Indefinite Lid-Awake still works without approval — the user disables it manually via the standard administrator-password sheet.
 
@@ -96,7 +96,7 @@ Vigil takes administrator privileges in two ways, both **only for Lid-Awake** (C
 
 Auto-updates land via Sparkle 2 from a stable URL: `https://github.com/dbuskariol/vigil/releases/latest/download/appcast.xml`. The appcast is EdDSA-signed; the public key is baked into `Info.plist` (`SUPublicEDKey`). Sparkle refuses to install any update whose signature doesn't verify.
 
-After a Sparkle update, Vigil's menu app probes the on-disk helper's `privileged-version` against its own bundled version and prompts you to re-approve if they disagree (the privileged helper at `/Library/PrivilegedHelperTools/…` is NOT replaced by Sparkle; only the bundled CLI inside the new `.app` is). Both feature LaunchAgents are also booted out before the install (so the new CLI Mach-O can replace the old in place) and re-bootstrapped automatically on relaunch for any feature whose session is still within its window.
+After a Sparkle update, Vigil's menu app probes the helper's IPC contract version against the version this build of the menu app expects. They are only re-prompted to re-approve when the privileged IPC contract surface actually changes (sudoers verbs added/removed, in-binary `pmset` allowlist changed, or `privileged-pmset-batch` wire format changed) — NOT on every routine bug-fix release. Both feature LaunchAgents are also booted out before the install (so the new CLI Mach-O can replace the old in place) and re-bootstrapped automatically on relaunch for any feature whose session is still within its window.
 
 Update checks send a `User-Agent: Sparkle/… Vigil/X.Y.Z` header plus your IP to GitHub on a daily schedule. No other system information is collected (`SUEnableSystemProfiling` is off).
 
@@ -128,8 +128,6 @@ Release builds (Developer ID + hardened runtime + Sparkle keys) are maintainer-o
 ## Safety
 
 Closed-lid Lid-Awake operation can trap heat. Keep the machine ventilated and prefer AC power. By default, `vigil lid-awake on` refuses to enable while running on battery power; pass `--force-battery` to override (or click **Turn On** a second time in the menu app to confirm).
-
-If you previously installed an old dev build of Vigil with the `dev.local.vigil` bundle id, run `Scripts/uninstall-legacy.sh` once before installing v0.2.0 to clear orphaned LaunchAgents, helper paths, and sudoers entries. v0.1.0-beta.1 → v0.2.0 migration is automatic on first launch (the old `com.vigil.app.assertions` LaunchAgent is booted out, any active session is adopted into the new Lid-Awake feature as an indefinite session, and the old runtime-state file is removed).
 
 ## License
 
