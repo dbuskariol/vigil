@@ -109,26 +109,30 @@ enum LidAwakeController {
     }
 
     /// Build and append a `.sessionEnded` event from the current session
-    /// and lid-telemetry state. Best-effort — silently no-ops if the
+    /// and lid-telemetry state, routed through `SessionMetrics.compute`
+    /// so the agent, the menu app's live overlay, and CLI status output
+    /// all produce identical numbers. Best-effort — no-ops if the
     /// session file is gone.
     static func emitSessionEnded(reason: StatsEvent.EndReason, at endedAt: Date = Date()) {
         guard let session = FeatureStateStore.shared.read(.lidAwake) else { return }
-        let elapsed = max(0, endedAt.timeIntervalSince(session.enabledAt))
         let telemetry = LidTelemetry.load()
-        var accumulated = telemetry?.accumulatedLidClosedSeconds ?? 0
-        // Fold any in-flight lid-closed duration into the accumulator.
-        if let closedAt = telemetry?.lidClosedAt {
-            accumulated += max(0, endedAt.timeIntervalSince(closedAt))
-        }
+        let metrics = SessionMetrics.compute(
+            session: session,
+            accumulatedLidClosedSeconds: telemetry?.accumulatedLidClosedSeconds ?? 0,
+            lidClosedSince: telemetry?.lidClosedAt,
+            lastLidCloseSeconds: telemetry?.lastClosedSeconds,
+            at: endedAt,
+            tracksLid: true
+        )
         StatsLog.shared.append(.sessionEnded(.init(
             sessionID: session.id,
             feature: .lidAwake,
             startedAt: session.enabledAt,
             endedAt: endedAt,
             endReason: reason,
-            elapsedSeconds: elapsed,
-            lidClosedSeconds: accumulated,
-            lastLidCloseSeconds: telemetry?.lastClosedSeconds
+            elapsedSeconds: metrics.elapsedSeconds,
+            lidClosedSeconds: metrics.lidClosedSeconds,
+            lastLidCloseSeconds: metrics.lastLidCloseSeconds
         )))
     }
 
@@ -297,16 +301,23 @@ enum CaffeinateController {
 
     static func emitSessionEnded(reason: StatsEvent.EndReason, at endedAt: Date = Date()) {
         guard let session = FeatureStateStore.shared.read(.caffeinate) else { return }
-        let elapsed = max(0, endedAt.timeIntervalSince(session.enabledAt))
+        let metrics = SessionMetrics.compute(
+            session: session,
+            accumulatedLidClosedSeconds: 0,
+            lidClosedSince: nil,
+            lastLidCloseSeconds: nil,
+            at: endedAt,
+            tracksLid: false
+        )
         StatsLog.shared.append(.sessionEnded(.init(
             sessionID: session.id,
             feature: .caffeinate,
             startedAt: session.enabledAt,
             endedAt: endedAt,
             endReason: reason,
-            elapsedSeconds: elapsed,
-            lidClosedSeconds: nil,
-            lastLidCloseSeconds: nil
+            elapsedSeconds: metrics.elapsedSeconds,
+            lidClosedSeconds: metrics.lidClosedSeconds,
+            lastLidCloseSeconds: metrics.lastLidCloseSeconds
         )))
     }
 

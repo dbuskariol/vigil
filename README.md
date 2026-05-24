@@ -2,7 +2,7 @@
 
 > A macOS menu-bar app and CLI that keeps a Mac awake on demand. Two features, one app: keep the display + system awake while you're at it, or keep the machine fully awake with the lid closed for unattended long jobs.
 
-<img width="446" height="746" alt="image" src="https://github.com/user-attachments/assets/a88d3c97-b286-4cb2-9e25-54b129c66182" />
+<img alt="Vigil popover, collapsed and expanded views side-by-side" src="docs/assets/popover.png" />
 
 ## Features
 

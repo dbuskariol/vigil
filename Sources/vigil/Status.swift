@@ -159,13 +159,15 @@ enum Status {
                 }
             }
             let s = snapshot.stats
-            if s.sessionCount > 0 {
-                print("  Lifetime sessions: \(s.sessionCount)")
-                print("  Lifetime enabled: \(DurationFormat.compact(seconds: s.totalEnabledSeconds))")
+            let live = snapshot.liveLifetime()
+            if live.sessionCount > 0 {
+                let liveNote = live.hasInFlightSession ? " (incl. in-flight session)" : ""
+                print("  Lifetime sessions: \(live.sessionCount)\(liveNote)")
+                print("  Lifetime enabled: \(DurationFormat.compact(seconds: live.totalEnabledSeconds))\(liveNote)")
                 if snapshot.feature == .lidAwake {
-                    print("  Lifetime lid-closed: \(DurationFormat.compact(seconds: s.totalLidClosedSeconds))")
+                    print("  Lifetime lid-closed: \(DurationFormat.compact(seconds: live.totalLidClosedSeconds))\(liveNote)")
                 }
-                print("  Longest session: \(DurationFormat.compact(seconds: s.longestSessionSeconds))")
+                print("  Longest session: \(DurationFormat.compact(seconds: live.longestSessionSeconds))")
                 if let last = s.lastEnabledAt {
                     print("  Last enabled: \(ISO8601DateFormatter().string(from: last))")
                 }
