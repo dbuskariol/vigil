@@ -13,7 +13,7 @@
 # Load .env.signing if present (Make syntax — see .env.signing.example).
 -include .env.signing
 
-.PHONY: build icon app release release-bundle notarize staple package-zip appcast \
+.PHONY: build icon app release release-bundle notarize staple package-zip package-dmg sign-dmg notarize-dmg staple-dmg appcast \
         gh-release gh-publish signing-doctor signing-setup \
         install uninstall status on off doctor verify clean \
         _generate_version _assemble _inject_version _inject_sparkle _trim_sparkle \
@@ -63,6 +63,8 @@ ENT_HELPER         := App/Helper.entitlements
 
 DIST_DIR           := dist
 RELEASE_ZIP        := $(DIST_DIR)/$(APP_NAME)-$(VERSION).zip
+RELEASE_DMG        := $(DIST_DIR)/$(APP_NAME)-$(VERSION).dmg
+DMG_STAGING        := $(DIST_DIR)/dmg-staging
 NOTARY_ZIP         := $(DIST_DIR)/$(APP_NAME)-notary.zip
 APPCAST_DIR        := $(DIST_DIR)/appcast-input
 RELEASE_NOTES_HTML := $(DIST_DIR)/releaseNotes-$(VERSION).html
@@ -90,6 +92,10 @@ release: icon
 	$(MAKE) notarize
 	$(MAKE) staple
 	$(MAKE) package-zip
+	$(MAKE) package-dmg
+	$(MAKE) sign-dmg
+	$(MAKE) notarize-dmg
+	$(MAKE) staple-dmg
 	$(MAKE) appcast
 	@if [ "$(PUBLISH)" = "true" ]; then \
 		$(MAKE) gh-release gh-publish; \
@@ -251,6 +257,42 @@ package-zip:
 	ditto -c -k --sequesterRsrc --keepParent "$(APP_BUNDLE)" "$(RELEASE_ZIP)"
 	@echo "Release zip: $(RELEASE_ZIP)"
 
+# DMG with drag-to-/Applications layout. The symlink trick is what every native
+# macOS installer DMG uses (the user opens the DMG, sees Vigil.app next to an
+# Applications shortcut, and drags one onto the other). UDZO is bzip2-compressed
+# read-only; --format UDZO matches what `hdiutil convert` would produce and what
+# Apple Gatekeeper expects.
+package-dmg:
+	rm -rf "$(DMG_STAGING)"
+	rm -f "$(RELEASE_DMG)"
+	mkdir -p "$(DMG_STAGING)"
+	ditto "$(APP_BUNDLE)" "$(DMG_STAGING)/$(APP_NAME).app"
+	ln -s /Applications "$(DMG_STAGING)/Applications"
+	hdiutil create -volname "$(APP_NAME)" \
+		-srcfolder "$(DMG_STAGING)" \
+		-ov -format UDZO \
+		"$(RELEASE_DMG)"
+	rm -rf "$(DMG_STAGING)"
+	@echo "Release dmg: $(RELEASE_DMG)"
+
+# DMGs are signed as a single Mach-O wrapper; no entitlements file needed.
+sign-dmg:
+	codesign --force --timestamp --sign "$(CODESIGN_IDENTITY)" "$(RELEASE_DMG)"
+	codesign --verify --verbose=2 "$(RELEASE_DMG)"
+
+# Notarize the DMG separately from the .app. Apple treats the DMG as its own
+# notarization unit (the stapled ticket attaches to the DMG, not to the inner
+# .app — though the inner .app already has its own stapled ticket from earlier).
+notarize-dmg:
+	xcrun notarytool submit "$(RELEASE_DMG)" \
+		--keychain-profile "$(APPLE_KEYCHAIN_PROFILE)" \
+		--wait --timeout 30m
+
+staple-dmg:
+	xcrun stapler staple "$(RELEASE_DMG)"
+	xcrun stapler validate "$(RELEASE_DMG)"
+	spctl --assess --type open --context context:primary-signature --verbose=4 "$(RELEASE_DMG)"
+
 # Render release notes Markdown to HTML for Sparkle, then hydrate prior release
 # zips (so generate_appcast builds a multi-entry feed) and generate appcast.xml.
 appcast:
@@ -285,7 +327,7 @@ gh-release:
 	@command -v gh >/dev/null || { echo "ERROR: gh CLI required"; exit 1; }
 	@PRE=""; case "$(VERSION)" in *-*) PRE="--prerelease" ;; esac; \
 	gh release delete "v$(VERSION)" --repo "$(GH_REPO)" --yes --cleanup-tag 2>/dev/null || true; \
-	ASSETS=("$(RELEASE_ZIP)" "$(RELEASE_NOTES_HTML)" "$(DIST_DIR)/appcast.xml"); \
+	ASSETS=("$(RELEASE_DMG)" "$(RELEASE_ZIP)" "$(RELEASE_NOTES_HTML)" "$(DIST_DIR)/appcast.xml"); \
 	for z in $(APPCAST_DIR)/Vigil-*.zip; do \
 		base="$$(basename "$$z")"; \
 		[ "$$base" != "Vigil-$(VERSION).zip" ] && ASSETS+=("$$z"); \

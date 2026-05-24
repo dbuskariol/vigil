@@ -9,10 +9,11 @@
 
 ## Install
 
-1. Download `Vigil-X.Y.Z.zip` from [the latest release](https://github.com/dbuskariol/vigil/releases/latest).
-2. Unzip it.
-3. **Drag `Vigil.app` to `/Applications` before opening it.** macOS Gatekeeper translocates apps launched from `~/Downloads` into a randomised quarantine path; Vigil refuses to enable while translocated and shows a banner asking you to move it.
-4. Open `Vigil.app`. The menu-bar icon appears at the right of the status bar.
+1. Download `Vigil-X.Y.Z.dmg` from [the latest release](https://github.com/dbuskariol/vigil/releases/latest).
+2. Open the DMG and drag `Vigil.app` to the `Applications` shortcut inside it.
+3. Open `Vigil.app` from `/Applications`. The menu-bar icon appears at the right of the status bar.
+
+(If you instead use the `.zip` artefact: unzip it and drag `Vigil.app` to `/Applications` **before opening it**. macOS Gatekeeper translocates apps launched from `~/Downloads` to a randomised quarantine path; Vigil refuses to enable while translocated.)
 
 Auto-updates check daily via Sparkle 2 with EdDSA signature verification. You can disable them in the Sparkle preferences dialog.
 
