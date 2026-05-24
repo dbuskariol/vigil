@@ -4,11 +4,10 @@ import VigilIdentifiers
 
 /// Privileged `pmset` execution + scoped one-time-approval helper install.
 ///
-/// Preserved verbatim from v0.1.0-beta.1 except for the
-/// `installApprovedHelperFromBundledPath` rename used by the menu app — the
-/// allowlist surface, the sudoers-rule shape, and the `privileged-version`
-/// handshake all remain unchanged. v0.2.0's Caffeinate feature needs no
-/// privileged ops at all, so this surface does NOT grow.
+/// The sudoers allowlist surface is intentionally narrow and gated on a
+/// single set of verbs (see `VigilIdentifiers.sudoersVerbs`); the in-binary
+/// `argumentsAreAllowedPMSetBatch` adds a second layer of validation on
+/// the pmset arguments themselves. Caffeinate uses none of this surface.
 enum Privilege {
     static let approvedHelperFlag = "--approved-helper"
     static let adminPromptFlag = "--admin-prompt"
@@ -90,9 +89,16 @@ enum Privilege {
             throw RuntimeError.commandFailed("approve-all", "Run approval from the menu app or a normal user shell.")
         }
 
-        let user = NSUserName()
+        if VigilIdentifiers.isTranslocated {
+            throw RuntimeError.refused("""
+            Refusing to install the privileged helper from a translocated bundle.
+            macOS Gatekeeper has quarantined this launch under /private/var/folders/…/AppTranslocation/….
+            Move Vigil.app to /Applications first, then re-run `vigil approve-all`.
+            """)
+        }
+
+        let sudoersLine = VigilIdentifiers.sudoersLine(for: NSUserName())
         let helperPath = VigilIdentifiers.privilegedHelperPath
-        let sudoersLine = "\(user) ALL=(root) NOPASSWD: \(helperPath) privileged-pmset-batch *, \(helperPath) approval-status, \(helperPath) privileged-version"
         let script = """
         set -e
         install -d -o root -g wheel -m 755 /Library/PrivilegedHelperTools
@@ -110,6 +116,10 @@ enum Privilege {
 
     static func printPrivilegedVersion() {
         print(VigilVersion.value)
+    }
+
+    static func printPrivilegedIPCContractVersion() {
+        print(String(VigilIdentifiers.IPCContractVersion))
     }
 
     static func runPrivilegedShellCommand(_ command: String) throws {

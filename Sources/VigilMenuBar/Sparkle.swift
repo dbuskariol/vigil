@@ -49,20 +49,15 @@ final class UpdateController: ObservableObject {
     }
 }
 
-/// Boots out every Vigil-owned LaunchAgent (both v0.2.0 labels and the v0.1
-/// legacy label, defensively) before Sparkle replaces the bundled CLI
-/// binary. Otherwise launchd may hold a file-handle on the old Mach-O and
-/// fail the in-place swap.
-///
-/// On relaunch, `AppCoordinator.reArmAgentsIfNeeded()` re-bootstraps the
-/// per-feature agents against the new CLI for any feature whose session is
-/// still within its window.
+/// Boots out every Vigil-owned LaunchAgent before Sparkle replaces the
+/// bundled CLI binary, and classifies failure outcomes for the App
+/// Management permission heuristic.
 final class SparkleDelegate: NSObject, SPUUpdaterDelegate {
+
     func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
         let labels = [
             VigilIdentifiers.lidAwakeAgentLabel,
             VigilIdentifiers.caffeinateAgentLabel,
-            VigilIdentifiers.legacyAssertionAgentLabel,
         ]
         let domain = "gui/\(getuid())"
         for label in labels {
@@ -71,6 +66,20 @@ final class SparkleDelegate: NSObject, SPUUpdaterDelegate {
             task.arguments = ["bootout", "\(domain)/\(label)"]
             try? task.run()
             task.waitUntilExit()
+        }
+    }
+
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        Task { @MainActor in
+            SparkleUpdatePermissionTracker.shared.recordFailure(error)
+        }
+    }
+
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        if error == nil {
+            Task { @MainActor in
+                SparkleUpdatePermissionTracker.shared.recordSuccess()
+            }
         }
     }
 }

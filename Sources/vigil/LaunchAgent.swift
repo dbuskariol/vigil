@@ -72,7 +72,18 @@ enum LaunchAgent {
     /// Always rewrites the plist with the *current* executable path so that
     /// after a Sparkle install (or any other in-place bundle replacement) the
     /// plist points at the new CLI binary.
+    ///
+    /// Refuses to operate from a translocated bundle (the plist would bake
+    /// in the ephemeral `/private/var/folders/…/AppTranslocation/…` path and
+    /// would silently fail the first time the mount tears down).
     static func install(for feature: Feature) throws {
+        if VigilIdentifiers.isTranslocated {
+            throw RuntimeError.refused("""
+            Refusing to install a LaunchAgent from a translocated bundle.
+            macOS Gatekeeper has quarantined this launch. Move Vigil.app to /Applications first.
+            """)
+        }
+
         try FileManager.default.createDirectory(
             at: Paths.launchAgentsDirectory,
             withIntermediateDirectories: true
@@ -107,8 +118,8 @@ enum LaunchAgent {
     }
 
     /// Fully unregister the LaunchAgent from `gui/<uid>`. Distinct from
-    /// `kill` — used by `LegacyMigration` and `SparkleDelegate` before
-    /// replacing the CLI binary on disk.
+    /// `kill` — used by `SparkleDelegate` before replacing the CLI binary
+    /// on disk.
     static func bootout(label: String) {
         let domain = "gui/\(getuid())"
         _ = try? Shell.run("/bin/launchctl", ["bootout", "\(domain)/\(label)"], requireSuccess: false)

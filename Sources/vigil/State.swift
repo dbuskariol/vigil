@@ -2,7 +2,7 @@ import Foundation
 import VigilCore
 
 /// Captured `pmset` profile that Lid-Awake snapshots on first enable and
-/// restores on disable. Preserved verbatim from v0.1.0-beta.1.
+/// restores on disable.
 struct StateFile: Codable {
     var createdAt: Date
     var sleepDisabled: Bool?

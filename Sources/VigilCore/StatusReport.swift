@@ -107,9 +107,17 @@ public struct StatusReport: Codable, Sendable {
     public struct HelperSnapshot: Codable, Sendable {
         public let approved: Bool
         public let installedVersion: String?
-        public init(approved: Bool, installedVersion: String?) {
+        public let installedIPCContractVersion: Int?
+        public let expectedIPCContractVersion: Int
+        public init(approved: Bool, installedVersion: String?, installedIPCContractVersion: Int?, expectedIPCContractVersion: Int) {
             self.approved = approved
             self.installedVersion = installedVersion
+            self.installedIPCContractVersion = installedIPCContractVersion
+            self.expectedIPCContractVersion = expectedIPCContractVersion
+        }
+
+        public var contractMatches: Bool {
+            installedIPCContractVersion == expectedIPCContractVersion
         }
     }
 }
