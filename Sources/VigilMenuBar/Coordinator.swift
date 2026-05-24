@@ -57,7 +57,7 @@ final class AppCoordinator: ObservableObject {
     @Published var isBusy = false
     @Published var lastMessage = "Ready"
     @Published var helperApproved = false
-    @Published var helperVersionMismatch = false
+    @Published var helperContractMismatch = false
     @Published var pendingBatteryConfirmation: Feature?
 
     @Published private(set) var isTranslocated = AppLocation.isTranslocated
@@ -69,9 +69,13 @@ final class AppCoordinator: ObservableObject {
 
     let caffeinate: FeatureViewModel
     let lidAwake: FeatureViewModel
+    let permissions = PermissionState()
+    let loginItem = LoginItemController()
+    let onboarding = OnboardingModel()
 
     private var refreshTask: Task<Void, Never>?
     private var previousActive: [Feature: Bool] = [:]
+    private var activeObserver: NSObjectProtocol?
 
     init() {
         self.caffeinate = FeatureViewModel(feature: .caffeinate)
@@ -81,18 +85,40 @@ final class AppCoordinator: ObservableObject {
             lastMessage = AppLocation.translocationMessage
         }
 
-        Task { await self.refresh(showMessage: true, reArmIfNeeded: true) }
+        Task {
+            await self.refresh(showMessage: true, reArmIfNeeded: true)
+            await self.permissions.refresh(loginItemController: self.loginItem)
+        }
 
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
-                await self?.refresh(showMessage: false, reArmIfNeeded: false)
+                guard let self else { return }
+                await self.refresh(showMessage: false, reArmIfNeeded: false)
+                await self.permissions.refresh(loginItemController: self.loginItem)
+            }
+        }
+
+        // Refresh permissions when the user returns to Vigil — covers the
+        // "open Settings, change a permission, switch back" loop.
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.loginItem.refresh()
+                await self.permissions.refresh(loginItemController: self.loginItem)
             }
         }
     }
 
     deinit {
         refreshTask?.cancel()
+        if let activeObserver {
+            NotificationCenter.default.removeObserver(activeObserver)
+        }
     }
 
     // MARK: - Public actions
@@ -118,8 +144,8 @@ final class AppCoordinator: ObservableObject {
         let viewModel = vm(for: feature)
         let onBattery = statusReport?.battery.isBatteryPower ?? false
 
-        // Lid-awake refuses battery without explicit confirmation, matching
-        // v0.1.0-beta.1's safety. Caffeinate's default is to allow battery.
+        // Lid-awake refuses battery without explicit confirmation; the
+        // user must opt in. Caffeinate's default is to allow battery.
         let requireBatteryConfirm = (feature == .lidAwake)
             && onBattery
             && pendingBatteryConfirmation != feature
@@ -166,6 +192,21 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
+    func openSetup(focusOn step: OnboardingStep = .welcome) {
+        onboarding.requestOpen(mode: .setup, focusOn: step)
+    }
+
+    /// First missing permission step, used by the popover ⚠️ button to
+    /// open Setup focused on the right card.
+    var firstMissingStep: OnboardingStep {
+        if permissions.location == .missingRequired { return .moveToApplications }
+        if permissions.helperContract == .missingRequired { return .approveAdmin }
+        if permissions.appManagement == .missingRequired { return .allowAutoUpdates }
+        if permissions.notifications == .missingRequired { return .notifications }
+        if permissions.loginItem == .missingRequired { return .openAtLogin }
+        return .welcome
+    }
+
     func quit() {
         // Both features are LaunchAgent-backed and survive menu-app quit by
         // design. Users who want to stop a feature use the per-card toggle
@@ -210,10 +251,7 @@ final class AppCoordinator: ObservableObject {
     // MARK: - Refresh + re-arm
 
     private func refresh(showMessage: Bool, reArmIfNeeded: Bool) async {
-        async let statusFetch = Helper.run(["status", "--json"])
-        async let approvalFetch = Helper.run(["approval-status"])
-        let result = await statusFetch
-        let approval = await approvalFetch
+        let result = await Helper.run(["status", "--json"])
 
         var decoded: StatusReport?
         if result.status == 0,
@@ -224,8 +262,25 @@ final class AppCoordinator: ObservableObject {
             self.caffeinate.snapshot = report.features.first(where: { $0.feature == .caffeinate })
             self.lidAwake.snapshot = report.features.first(where: { $0.feature == .lidAwake })
 
+            // Helper / IPC-contract state read straight out of the status
+            // report. The CLI's `Status.build` does the `sudo -n
+            // privileged-ipc-version` probe; we just consume the result.
+            // `helperApproved` is the "fully ready" predicate (installed +
+            // contract matches what this build of the menu app expects).
+            let approved = report.helper.approved
+            let contractMatches = report.helper.contractMatches
+            helperApproved = approved && contractMatches
+            helperContractMismatch = approved && !contractMatches
+            permissions.apply(report: report)
+
             if showMessage {
-                lastMessage = isTranslocated ? AppLocation.translocationMessage : "Updated"
+                if isTranslocated {
+                    lastMessage = AppLocation.translocationMessage
+                } else if helperContractMismatch {
+                    lastMessage = "Privileged helper sudoers rule is out of date. Re-approve from Setup."
+                } else {
+                    lastMessage = "Updated"
+                }
             }
 
             // Emit opt-in expiry notifications for features that transitioned
@@ -244,21 +299,6 @@ final class AppCoordinator: ObservableObject {
             }
         } else if showMessage {
             lastMessage = result.output
-        }
-
-        let approvalInstalled = Self.approvalIsInstalled(approval)
-        if approvalInstalled {
-            let installedVersion = await ApprovedHelperInstaller.installedHelperVersion()
-            let bundledVersion = VigilVersion.value
-            let versionsMatch = installedVersion != nil && installedVersion == bundledVersion
-            helperVersionMismatch = !versionsMatch
-            helperApproved = versionsMatch
-            if !versionsMatch && showMessage {
-                lastMessage = "Privileged helper is outdated. Re-approve to update."
-            }
-        } else {
-            helperApproved = false
-            helperVersionMismatch = false
         }
 
         if reArmIfNeeded, let report = decoded {
@@ -342,14 +382,6 @@ final class AppCoordinator: ObservableObject {
             args.append("--force-battery")
         }
         return args
-    }
-
-    private static func approvalIsInstalled(_ result: HelperResult) -> Bool {
-        guard result.status == 0 else { return false }
-        return result.output
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .contains("Approved helper: installed")
     }
 }
 

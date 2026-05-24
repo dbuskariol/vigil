@@ -6,16 +6,28 @@ import VigilCore
 /// The status-bar icon itself. Single switching SF Symbol per the design
 /// spec; all four symbols ship in macOS 13.0. Tooltip + accessibility label
 /// match each state so screen readers and hover both describe what's
-/// happening.
+/// happening. A small orange dot overlays the symbol whenever any required
+/// permission is missing — gives the user a heads-up before they even open
+/// the popover.
 struct MenuBarLabel: View {
     let caffeinateActive: Bool
     let lidAwakeActive: Bool
+    let hasPendingPermissions: Bool
 
     var body: some View {
         Image(systemName: symbolName)
             .symbolRenderingMode(.monochrome)
             .font(.system(size: 18, weight: .semibold))
             .frame(width: 22, height: 22)
+            .overlay(alignment: .topTrailing) {
+                if hasPendingPermissions {
+                    Circle()
+                        .fill(.orange)
+                        .frame(width: 6, height: 6)
+                        .offset(x: 1, y: -1)
+                        .accessibilityHidden(true)
+                }
+            }
             .accessibilityLabel(tooltip)
             .help(tooltip)
     }
@@ -30,12 +42,14 @@ struct MenuBarLabel: View {
     }
 
     private var tooltip: String {
+        let base: String
         switch (caffeinateActive, lidAwakeActive) {
-        case (false, false): "Vigil — idle"
-        case (true, false): "Vigil — Caffeinate active"
-        case (false, true): "Vigil — Lid-Awake active"
-        case (true, true): "Vigil — Caffeinate and Lid-Awake active"
+        case (false, false): base = "Vigil — idle"
+        case (true, false): base = "Vigil — Caffeinate active"
+        case (false, true): base = "Vigil — Lid-Awake active"
+        case (true, true): base = "Vigil — Caffeinate and Lid-Awake active"
         }
+        return hasPendingPermissions ? "\(base) (setup needs attention)" : base
     }
 }
 
@@ -194,63 +208,10 @@ struct FeatureCard<Accessory: View>: View {
     }
 }
 
-// MARK: - Banners
-
-struct TranslocationBanner: View {
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "shield.lefthalf.filled")
-                .foregroundStyle(.red)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Move Vigil to /Applications")
-                    .font(.caption.weight(.semibold))
-                Text("macOS Gatekeeper has quarantined this launch. Quit Vigil, drag Vigil.app into /Applications, then reopen.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-        }
-        .padding(10)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct ApprovalBanner: View {
-    @ObservedObject var coordinator: AppCoordinator
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: coordinator.helperVersionMismatch
-                  ? "exclamationmark.triangle.fill"
-                  : "lock.open")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(coordinator.helperVersionMismatch ? "Helper outdated" : "One-time approval available")
-                    .font(.caption.weight(.semibold))
-                Text(coordinator.helperVersionMismatch
-                    ? "Re-approve to update the privileged helper to the current Vigil version."
-                    : "Lid-awake on/off and time-limited auto-disable can run without password prompts. Caffeinate works without approval.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button(coordinator.helperVersionMismatch ? "Re-approve" : "Approve All") {
-                coordinator.approveAllActions()
-            }
-            .disabled(coordinator.isBusy)
-        }
-        .padding(10)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
 // MARK: - Lid-awake visual sub-options
 
-/// The two "dim on close" toggles only apply to lid-awake. v0.1.0-beta.1
-/// placed them as their own row; v0.2.0 nests them inside the lid-awake
-/// card so feature concerns stay co-located.
+/// The two "dim on close" toggles only apply to lid-awake; they're nested
+/// inside the lid-awake card so feature concerns stay co-located.
 struct LidAwakeVisualToggles: View {
     @AppStorage("dimDisplayOnClose") var dimDisplayOnClose = true
     @AppStorage("dimKeyboardOnClose") var dimKeyboardOnClose = true
@@ -287,10 +248,6 @@ struct DiagnosticsDisclosure: View {
                     diagnosticsRow("Detected displays", "\(report.displays.count)")
                     diagnosticsRow("Lid", lidLabel(report.power.clamshellClosed))
                     diagnosticsRow("Keyboard backlight API", report.keyboardBacklight.apiAvailable ? "Available" : "Unavailable")
-                    diagnosticsRow("Helper approved", report.helper.approved ? "Yes" : "No")
-                    if let v = report.helper.installedVersion {
-                        diagnosticsRow("Helper version", v)
-                    }
                     diagnosticsRow("Vigil version", report.version)
                 } else {
                     Text("No diagnostics available")
@@ -341,11 +298,11 @@ struct FooterBar: View {
             Spacer()
 
             Button {
-                coordinator.refresh()
+                coordinator.openSetup(focusOn: .welcome)
             } label: {
-                Image(systemName: "arrow.clockwise")
+                Image(systemName: "gearshape")
             }
-            .help("Refresh")
+            .help("Setup…")
             .disabled(coordinator.isBusy)
             .buttonStyle(.plain)
 
@@ -396,7 +353,9 @@ struct FooterBar: View {
             } label: {
                 Image(systemName: "power")
             }
-            .help("Quit Vigil (active features keep running in the background)")
+            .help(coordinator.lidAwake.isActive || coordinator.caffeinate.isActive
+                  ? "Quit Vigil (active features keep running in the background)"
+                  : "Quit Vigil")
             .buttonStyle(.plain)
         }
     }
@@ -432,6 +391,18 @@ struct HeaderRow: View {
 
             Spacer()
 
+            if coordinator.permissions.hasRequiredMissing {
+                Button {
+                    coordinator.openSetup(focusOn: coordinator.firstMissingStep)
+                } label: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help("Setup needs attention")
+            }
+
             if coordinator.isBusy {
                 ProgressView().controlSize(.small)
             }
@@ -463,10 +434,6 @@ struct MenuContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HeaderRow(coordinator: coordinator)
-
-            if coordinator.isTranslocated {
-                TranslocationBanner()
-            }
 
             FeatureCard(
                 title: "Caffeinate",
@@ -523,7 +490,21 @@ struct MenuContentView: View {
             ) {
                 VStack(alignment: .leading, spacing: 8) {
                     if !coordinator.helperApproved {
-                        ApprovalBanner(coordinator: coordinator)
+                        HStack(spacing: 6) {
+                            Image(systemName: "lock.open")
+                                .foregroundStyle(.orange)
+                                .font(.caption)
+                            Text("Approval needed —")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Button("Open Setup") {
+                                coordinator.openSetup(focusOn: .approveAdmin)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tint)
+                            Spacer()
+                        }
                     }
                     LidAwakeVisualToggles(
                         lidAwakeActive: coordinator.lidAwake.isActive,
