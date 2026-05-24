@@ -4,9 +4,6 @@
 
 <img width="446" height="746" alt="image" src="https://github.com/user-attachments/assets/a88d3c97-b286-4cb2-9e25-54b129c66182" />
 
-
-<img width="421" height="461" alt="image" src="https://github.com/user-attachments/assets/25a32db3-f025-42d1-9dc2-1c33a54e53d6" />
-
 ## Features
 
 - **Caffeinate** — holds two IOKit power assertions (`PreventUserIdleSystemSleep` + `PreventUserIdleDisplaySleep`) to keep the display and system from idling to sleep. No `pmset`, no root, no privileged helper. Manual Apple-menu Sleep and lid close still send the Mac to sleep — by design.
