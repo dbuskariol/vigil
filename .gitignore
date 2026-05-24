@@ -9,6 +9,7 @@ App/AppIcon.iconset/
 *.p12
 *.p8
 sparkle_private_key.txt
+.env.signing
 .release-secrets/
 
 *.xcodeproj/
