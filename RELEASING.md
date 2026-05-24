@@ -1,80 +1,80 @@
 # Releasing Vigil
 
+Vigil is signed and notarized **locally** on the maintainer's Mac, then pushed to GitHub Releases. No CI secrets, no `.p12` base64 dance — just your existing Developer ID cert in the login keychain and one app-specific password stored once.
+
 ## One-time setup
 
-1. **Generate the Sparkle EdDSA key.**
+1. **Generate the Sparkle EdDSA key.** (Skip if already done — check `make signing-doctor`.)
    ```sh
    swift package resolve
    .build/artifacts/sparkle/Sparkle/bin/generate_keys
    ```
-   The private key is stored in the login keychain (`https://sparkle-project.org` / `ed25519`). The public key is printed to stdout.
+   Private key lands in your login keychain (`https://sparkle-project.org` / `ed25519`). Public key is printed to stdout. **Back up the private key offline** — 1Password or hardware key. Lose it and no existing Vigil install can ever auto-update.
 
-2. **Mirror the keys to GitHub secrets.**
+2. **Create `.env.signing` from the template.**
    ```sh
-   .build/artifacts/sparkle/Sparkle/bin/generate_keys -p \
-     | tr -d '\n' | gh secret set SPARKLE_PUBLIC_ED_KEY --repo dbuskariol/vigil
-   .build/artifacts/sparkle/Sparkle/bin/generate_keys -x /dev/stdout \
-     | gh secret set SPARKLE_PRIVATE_KEY --repo dbuskariol/vigil
+   cp .env.signing.example .env.signing
    ```
-   `-x /dev/stdout` keeps the private key out of the filesystem entirely (APFS copy-on-write makes `rm -P` ineffective for true secure deletion).
+   Fill in `CODESIGN_IDENTITY` (your Developer ID) and uncomment the three `APPLE_*` lines (Apple ID email, app-specific password from https://appleid.apple.com → App-Specific Passwords, Team ID).
 
-3. **Back up the EdDSA private key offline.** 1Password / hardware key. If it's ever lost, no existing Vigil install will auto-update again; users must manually re-download. There is no recovery short of shipping a new app with a new public key.
-
-4. **Export Developer ID Application cert + private key as .p12.**
-   In Keychain Access, find `Developer ID Application: Daniel Buskariol (BJCVJ5G7MJ)`, select both the cert and the linked private key, right-click → Export Items, set a strong password. Then:
+3. **Store the app-specific password in your keychain via notarytool:**
    ```sh
-   base64 -i cert.p12 | gh secret set DEVELOPER_ID_APPLICATION_P12_BASE64 --repo dbuskariol/vigil
-   gh secret set DEVELOPER_ID_APPLICATION_P12_PASSWORD --repo dbuskariol/vigil   # paste the password
-   rm cert.p12
+   make signing-setup
    ```
+   This calls `xcrun notarytool store-credentials vigil-notary` under the hood. After it succeeds, comment out the `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` lines in `.env.signing` — the password lives in your keychain now.
 
-5. **Issue an App Store Connect API key** for notarization (App Store Connect → Users and Access → Integrations → Team Keys → +). Role: `Developer` is sufficient. The `.p8` can only be downloaded once; store carefully.
+4. **Sanity check:**
    ```sh
-   gh secret set APPSTORE_CONNECT_API_KEY_ID --repo dbuskariol/vigil          # 10-char key id
-   gh secret set APPSTORE_CONNECT_API_KEY_ISSUER_ID --repo dbuskariol/vigil   # UUID
-   base64 -i AuthKey_XXXXXXXXXX.p8 | gh secret set APPSTORE_CONNECT_API_KEY_P8_BASE64 --repo dbuskariol/vigil
+   make signing-doctor
    ```
+   Should print your Developer ID identity and confirm the keychain profile.
 
 ## Per-release
 
-1. Write `releases/notes/X.Y.Z.md` (GitHub-flavoured Markdown; rendered to HTML in CI via `gh api /markdown`).
-2. Commit it.
-3. Tag and push:
+1. Write release notes for the next version: `releases/notes/X.Y.Z.md` (GitHub-flavoured Markdown).
+2. Commit them.
+3. Cut the release:
    ```sh
-   git tag -a vX.Y.Z -m "vX.Y.Z"
+   make release VERSION=0.1.0-beta.1 BUILD=1
+   ```
+   The pipeline runs: build → sign (inside-out) → notarize via Apple → staple → zip → render release notes HTML via `gh api /markdown` → hydrate prior release zips → generate Sparkle appcast → create GitHub draft release → upload all assets → publish.
+
+   SemVer pre-release tags (anything after `-`, e.g. `0.1.0-beta.1`) are flagged as prereleases on GitHub so they don't pollute `releases/latest/download/appcast.xml`.
+
+4. The whole pipeline takes ~5-10 min (Apple's notarization is the slow part — usually 2-5 min).
+
+5. **Optionally tag the commit afterwards.** The release flow does not depend on a git tag:
+   ```sh
+   git tag -a v0.1.0-beta.1 -m "v0.1.0-beta.1"
    git push --tags
    ```
-4. Watch the `release` workflow run. It builds, signs, notarizes, staples, generates the appcast, creates a draft release with all assets attached, then publishes it.
-5. If the workflow fails after creating the draft, re-running the tag is safe — the workflow deletes any stale draft for the same tag before creating a new one.
 
-Versioning rules:
-- `CFBundleShortVersionString` (the human version) comes from the tag (`v0.2.0` → `0.2.0`).
-- `CFBundleVersion` (Sparkle's ordering key) comes from `github.run_number` — strictly monotonic across workflow runs, independent of git history. Force-pushes / soft-resets do not affect it.
+## Versioning rules
 
-## Manual / re-run release
+- `CFBundleShortVersionString` (human version) = the `VERSION` argument you pass.
+- `CFBundleVersion` (Sparkle's ordering key) = the `BUILD` argument. **Must strictly increase** between releases or Sparkle will silently refuse the update. Either bump it manually (`BUILD=2`, `BUILD=3`, ...) or use `BUILD=$(date +%s)` for a monotonic timestamp.
 
-`workflow_dispatch` accepts a `version` input (without leading `v`). Use it to re-cut a release after fixing CI without re-tagging.
+## Dry-run / local-only
 
-## Local notarized dry-run (optional)
-
-For practising the full release path outside CI:
-
+Skip the GitHub upload to test the pipeline:
 ```sh
-xcrun notarytool store-credentials vigil-notary \
-  --key ~/.appstoreconnect/private_keys/AuthKey_XXXXXXXXXX.p8 \
-  --key-id XXXXXXXXXX \
-  --issuer YYYYYYYY-YYYY-YYYY-YYYY-YYYYYYYYYYYY
-
-make release \
-  VERSION=0.2.0 BUILD=$(date +%s) \
-  CODESIGN_IDENTITY="Developer ID Application: Daniel Buskariol (BJCVJ5G7MJ)" \
-  SPARKLE_FEED_URL="https://github.com/dbuskariol/vigil/releases/latest/download/appcast.xml" \
-  SPARKLE_PUBLIC_ED_KEY="$(.build/artifacts/sparkle/Sparkle/bin/generate_keys -p)"
-
-ditto -c -k --sequesterRsrc --keepParent dist/Vigil.app dist/Vigil-notary.zip
-xcrun notarytool submit dist/Vigil-notary.zip --keychain-profile vigil-notary --wait --timeout 30m
-xcrun stapler staple dist/Vigil.app
-ditto -c -k --sequesterRsrc --keepParent dist/Vigil.app dist/Vigil-0.2.0.zip
+make release VERSION=0.1.0-beta.1 BUILD=99 PUBLISH=false
 ```
+Artefacts land in `dist/`:
+- `Vigil-0.1.0-beta.1.zip` — stapled, notarized
+- `appcast.xml` — EdDSA-signed
+- `releaseNotes-0.1.0-beta.1.html`
 
-Don't push the resulting zip; it's just a dry-run.
+## Re-cutting a failed release
+
+If something blew up mid-pipeline, just re-run `make release VERSION=…`. The `gh-release` step deletes any stale draft for the same tag before recreating.
+
+## What `.env.signing` contains
+
+| Variable | Purpose |
+|---|---|
+| `CODESIGN_IDENTITY` | Full string — `Developer ID Application: Name (TEAMID)` |
+| `APPLE_KEYCHAIN_PROFILE` | Name under which notarytool stores credentials (default `vigil-notary`) |
+| `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` | Only needed for `make signing-setup`; can be removed after |
+
+`.env.signing` is gitignored. Never commit it.
