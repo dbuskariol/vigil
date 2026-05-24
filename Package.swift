@@ -16,16 +16,21 @@ let package = Package(
     ],
     targets: [
         .target(name: "VigilIdentifiers"),
+        .target(
+            name: "VigilCore",
+            dependencies: ["VigilIdentifiers"]
+        ),
         .target(name: "KeyboardBacklightBridge"),
         .executableTarget(
             name: "vigil",
-            dependencies: ["KeyboardBacklightBridge", "VigilIdentifiers"]
+            dependencies: ["KeyboardBacklightBridge", "VigilIdentifiers", "VigilCore"]
         ),
         .executableTarget(
             name: "VigilMenuBar",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle"),
-                "VigilIdentifiers"
+                "VigilIdentifiers",
+                "VigilCore"
             ]
         )
     ]
