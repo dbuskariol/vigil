@@ -4,6 +4,9 @@
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue) ![License: MIT](https://img.shields.io/badge/License-MIT-green) ![Sparkle 2](https://img.shields.io/badge/Sparkle-2.9%2B-orange)
 
+<img width="421" height="461" alt="image" src="https://github.com/user-attachments/assets/25a32db3-f025-42d1-9dc2-1c33a54e53d6" />
+
+
 ## Install
 
 1. Download `Vigil-X.Y.Z.zip` from [the latest release](https://github.com/dbuskariol/vigil/releases/latest).
