@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        The bundled `vigil` CLI dlopens private Apple frameworks at runtime:
+          - /System/Library/PrivateFrameworks/CoreDisplay.framework
+          - /System/Library/PrivateFrameworks/DisplayServices.framework
+          - /System/Library/PrivateFrameworks/CoreBrightness.framework (via KeyboardBacklightBridge)
+        Under Hardened Runtime, library validation in practice rejects these loads
+        in launchd-spawned background processes, where the dyld failure vanishes
+        into the system log with no user-visible signal. This entitlement is
+        therefore required from release #1, not deferred.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
