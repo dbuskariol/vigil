@@ -72,6 +72,16 @@ enum LidAwakeController {
         try FeatureStateStore.shared.touchSentinel(for: .lidAwake)
         LaunchAgent.waitForStartup(of: .lidAwake)
 
+        // Emit the start event AFTER everything is in place — if anything
+        // above throws, we don't want a phantom start in the log with no
+        // corresponding end.
+        StatsLog.shared.append(.sessionStarted(.init(
+            sessionID: session.id,
+            feature: .lidAwake,
+            timestamp: session.enabledAt,
+            duration: duration
+        )))
+
         print("SleepDisabled is now \(PowerDomainState.load().sleepDisabled.map(Utility.formatBool) ?? "unknown").")
         print("Lid-awake agent is \(LaunchAgent.isRunning(for: .lidAwake) ? "running" : "not running").")
         if let remaining = session.remainingSeconds() {
@@ -82,6 +92,12 @@ enum LidAwakeController {
 
     static func disable() throws {
         print("Disabling closed-lid full-awake profile.")
+
+        // Emit sessionEnded BEFORE removing the session / telemetry so we
+        // have the data to compute durations. The append is idempotent on
+        // sessionID, so a race with the agent's signal handler is safe.
+        emitSessionEnded(reason: .userDisabled)
+
         try restoreVisualState(removeSnapshot: true)
         FeatureStateStore.shared.removeSentinel(for: .lidAwake)
         FeatureStateStore.shared.clear(.lidAwake)
@@ -90,6 +106,30 @@ enum LidAwakeController {
         try restorePmsetSnapshot()
         print("SleepDisabled is now \(PowerDomainState.load().sleepDisabled.map(Utility.formatBool) ?? "unknown").")
         print("Lid-awake agent is \(LaunchAgent.isRunning(for: .lidAwake) ? "running" : "stopped").")
+    }
+
+    /// Build and append a `.sessionEnded` event from the current session
+    /// and lid-telemetry state. Best-effort — silently no-ops if the
+    /// session file is gone.
+    static func emitSessionEnded(reason: StatsEvent.EndReason, at endedAt: Date = Date()) {
+        guard let session = FeatureStateStore.shared.read(.lidAwake) else { return }
+        let elapsed = max(0, endedAt.timeIntervalSince(session.enabledAt))
+        let telemetry = LidTelemetry.load()
+        var accumulated = telemetry?.accumulatedLidClosedSeconds ?? 0
+        // Fold any in-flight lid-closed duration into the accumulator.
+        if let closedAt = telemetry?.lidClosedAt {
+            accumulated += max(0, endedAt.timeIntervalSince(closedAt))
+        }
+        StatsLog.shared.append(.sessionEnded(.init(
+            sessionID: session.id,
+            feature: .lidAwake,
+            startedAt: session.enabledAt,
+            endedAt: endedAt,
+            endReason: reason,
+            elapsedSeconds: elapsed,
+            lidClosedSeconds: accumulated,
+            lastLidCloseSeconds: telemetry?.lastClosedSeconds
+        )))
     }
 
     static func toggle(duration: Duration, forceBattery: Bool) throws {
@@ -232,6 +272,13 @@ enum CaffeinateController {
         try FeatureStateStore.shared.touchSentinel(for: .caffeinate)
         LaunchAgent.waitForStartup(of: .caffeinate)
 
+        StatsLog.shared.append(.sessionStarted(.init(
+            sessionID: session.id,
+            feature: .caffeinate,
+            timestamp: session.enabledAt,
+            duration: duration
+        )))
+
         print("Caffeinate agent is \(LaunchAgent.isRunning(for: .caffeinate) ? "running" : "not running").")
         if let remaining = session.remainingSeconds() {
             print("Auto-disables in \(remaining) seconds.")
@@ -241,10 +288,26 @@ enum CaffeinateController {
 
     static func disable() throws {
         print("Disabling caffeinate.")
+        emitSessionEnded(reason: .userDisabled)
         FeatureStateStore.shared.removeSentinel(for: .caffeinate)
         FeatureStateStore.shared.clear(.caffeinate)
         LaunchAgent.kill(for: .caffeinate)
         print("Caffeinate agent is \(LaunchAgent.isRunning(for: .caffeinate) ? "running" : "stopped").")
+    }
+
+    static func emitSessionEnded(reason: StatsEvent.EndReason, at endedAt: Date = Date()) {
+        guard let session = FeatureStateStore.shared.read(.caffeinate) else { return }
+        let elapsed = max(0, endedAt.timeIntervalSince(session.enabledAt))
+        StatsLog.shared.append(.sessionEnded(.init(
+            sessionID: session.id,
+            feature: .caffeinate,
+            startedAt: session.enabledAt,
+            endedAt: endedAt,
+            endReason: reason,
+            elapsedSeconds: elapsed,
+            lidClosedSeconds: nil,
+            lastLidCloseSeconds: nil
+        )))
     }
 
     static func toggle(duration: Duration, forceBattery: Bool) throws {
@@ -355,30 +418,34 @@ enum HoldEngine {
             }
         }
 
-        // Signal handlers: SIGTERM and SIGINT (sent by launchctl bootout / kill)
-        // perform clean release.
-        let restoreOnExit: @convention(c) (Int32) -> Void = { _ in
-            // Visual restore is best-effort and only meaningful for
-            // lid-awake; release of IOKit assertions happens automatically
-            // when the process exits, but we do it explicitly anyway for
-            // promptness.
-            try? LidAwakeController.restoreVisualState(removeSnapshot: false)
-            Foundation.exit(0)
-        }
-        signal(SIGTERM, restoreOnExit)
-        signal(SIGINT, restoreOnExit)
+        // Signal handlers: SIGTERM and SIGINT (sent by launchctl bootout /
+        // kill). We use DispatchSource rather than a raw signal() handler
+        // so we can do Swift work (file reads, JSON encoding) on a normal
+        // GCD queue — `signal()` handlers must be async-signal-safe and
+        // can't legitimately call ObjC/Swift runtime code. We mask the
+        // signal with SIG_IGN and let DispatchSource handle it.
+        signal(SIGTERM, SIG_IGN)
+        signal(SIGINT, SIG_IGN)
+        let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        sigterm.setEventHandler { handleSignaledExit(feature: feature, assertionIDs: assertionIDs) }
+        sigterm.resume()
+        let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        sigint.setEventHandler { handleSignaledExit(feature: feature, assertionIDs: assertionIDs) }
+        sigint.resume()
 
         // Keep references alive across the run loop.
         _ = primaryTimer
         _ = beltTimer
         _ = sentinelWatchdog
         _ = lidPollTimer
+        _ = sigterm
+        _ = sigint
 
         RunLoop.main.run()
         fatalError("RunLoop returned unexpectedly")
     }
 
-    // MARK: - Expiry path
+    // MARK: - Exit paths
 
     /// Called from the primary or belt-and-suspenders timer. For lid-awake
     /// this MUST be able to run the privileged `pmset` restore, which is why
@@ -386,15 +453,19 @@ enum HoldEngine {
     /// `--approved-helper` — `Privilege.useApprovedHelper` reads
     /// `CommandLine.arguments` directly.
     private static func handleExpiry(feature: Feature, assertionIDs: [IOPMAssertionID]) {
+        // Emit FIRST while session/telemetry are still on disk; the
+        // per-controller helper computes elapsed + lid-closed from them.
+        // StatsLog.append is idempotent on sessionID, so a race with the
+        // signal handler is safe.
+        switch feature {
+        case .lidAwake:   LidAwakeController.emitSessionEnded(reason: .timerExpired)
+        case .caffeinate: CaffeinateController.emitSessionEnded(reason: .timerExpired)
+        }
+
         releaseAssertions(assertionIDs)
 
         switch feature {
         case .lidAwake:
-            // Restore the visual snapshot (best-effort), then unprivileged
-            // bookkeeping, then privileged pmset restore. If the privileged
-            // path is unavailable (e.g. user didn't grant Approve All) we
-            // log and exit anyway — the menu app's next status refresh will
-            // observe the inconsistency and re-prompt.
             try? LidAwakeController.restoreVisualState(removeSnapshot: true)
             FeatureStateStore.shared.removeSentinel(for: .lidAwake)
             FeatureStateStore.shared.clear(.lidAwake)
@@ -410,6 +481,26 @@ enum HoldEngine {
             FeatureStateStore.shared.clear(.caffeinate)
         }
 
+        Foundation.exit(0)
+    }
+
+    /// SIGTERM / SIGINT handler. Distinguishes "user-disable through the
+    /// CLI" (which already emitted .userDisabled before SIGTERM-ing us)
+    /// from "external bootout" (e.g. Sparkle update) by checking whether
+    /// the session file is still on disk. The StatsLog de-dup also catches
+    /// any race.
+    private static func handleSignaledExit(feature: Feature, assertionIDs: [IOPMAssertionID]) {
+        if FeatureStateStore.shared.read(feature) != nil {
+            switch feature {
+            case .lidAwake:   LidAwakeController.emitSessionEnded(reason: .interrupted)
+            case .caffeinate: CaffeinateController.emitSessionEnded(reason: .interrupted)
+            }
+        }
+        // Visual restore is best-effort and only meaningful for lid-awake;
+        // IOKit assertions are released by the kernel on task termination,
+        // but we do it explicitly anyway for promptness.
+        try? LidAwakeController.restoreVisualState(removeSnapshot: false)
+        releaseAssertions(assertionIDs)
         Foundation.exit(0)
     }
 

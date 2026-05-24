@@ -21,6 +21,7 @@ enum Status {
         let lidSession = FeatureStateStore.shared.read(.lidAwake)
         let caffSession = FeatureStateStore.shared.read(.caffeinate)
         let lidTelemetry = LidTelemetry.load()
+        let aggregate = StatsAggregate.fold(events: StatsLog.shared.readAll())
 
         let lidExtras = StatusReport.FeatureSnapshot.LidExtras(
             currentClosedSince: lidTelemetry?.lidClosedAt,
@@ -33,10 +34,6 @@ enum Status {
             let sentinelExists = FeatureStateStore.shared.sentinelExists(for: f)
             let session = f == .lidAwake ? lidSession : caffSession
 
-            // "Active" means the feature is providing protection right now.
-            // For lid-awake we also accept the `SleepDisabled` indicator
-            // (pmset's actual user-facing effect); the assertion agent
-            // corroborates it.
             let active: Bool
             switch f {
             case .lidAwake:
@@ -47,12 +44,24 @@ enum Status {
                 active = agentRunning && sentinelExists
             }
 
+            let pf = aggregate.perFeature[f] ?? .init()
+            let danglingCount = aggregate.danglingSessions.filter { $0.feature == f }.count
+            let stats = StatusReport.FeatureSnapshot.Stats(
+                sessionCount: pf.sessionCount,
+                totalEnabledSeconds: Int(pf.totalEnabledSeconds),
+                totalLidClosedSeconds: Int(pf.totalLidClosedSeconds),
+                longestSessionSeconds: Int(pf.longestSessionSeconds),
+                lastEnabledAt: pf.lastEnabledAt,
+                danglingSessionCount: danglingCount
+            )
+
             return StatusReport.FeatureSnapshot(
                 feature: f,
                 active: active,
                 agentRunning: agentRunning,
                 session: session,
-                lid: f == .lidAwake ? lidExtras : nil
+                lid: f == .lidAwake ? lidExtras : nil,
+                stats: stats
             )
         }
 
@@ -148,6 +157,21 @@ enum Status {
                 if let since = lid.currentClosedSince {
                     print("  Current lid closed since: \(ISO8601DateFormatter().string(from: since))")
                 }
+            }
+            let s = snapshot.stats
+            if s.sessionCount > 0 {
+                print("  Lifetime sessions: \(s.sessionCount)")
+                print("  Lifetime enabled: \(DurationFormat.compact(seconds: s.totalEnabledSeconds))")
+                if snapshot.feature == .lidAwake {
+                    print("  Lifetime lid-closed: \(DurationFormat.compact(seconds: s.totalLidClosedSeconds))")
+                }
+                print("  Longest session: \(DurationFormat.compact(seconds: s.longestSessionSeconds))")
+                if let last = s.lastEnabledAt {
+                    print("  Last enabled: \(ISO8601DateFormatter().string(from: last))")
+                }
+            }
+            if s.danglingSessionCount > 0 {
+                print("  Dangling sessions: \(s.danglingSessionCount) (started but no end event — likely a crash)")
             }
             print("")
         }
