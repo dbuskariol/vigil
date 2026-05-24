@@ -43,6 +43,14 @@ jobs:
           fi
           echo "VERSION=$V"                   >> "$GITHUB_ENV"
           echo "BUILD=${{ github.run_number }}" >> "$GITHUB_ENV"
+          # SemVer 2.0 pre-release identifiers (anything after `-`, e.g.
+          # 0.1.0-beta.1) flag the release as a prerelease on GitHub. This
+          # keeps it out of `releases/latest/download/appcast.xml` so Sparkle
+          # users on stable won't auto-update onto a beta.
+          case "$V" in
+            *-*) echo "PRERELEASE_FLAG=--prerelease" >> "$GITHUB_ENV" ;;
+            *)   echo "PRERELEASE_FLAG="              >> "$GITHUB_ENV" ;;
+          esac
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
@@ -159,6 +167,7 @@ jobs:
           done
           gh release create "v$VERSION" \
             --draft \
+            $PRERELEASE_FLAG \
             --title "v$VERSION" \
             --notes-file "releases/notes/$VERSION.md" \
             "${ASSETS[@]}"
