@@ -8,12 +8,12 @@ vigil: keep a Mac awake on demand
 Usage:
   vigil status [--json]
   vigil doctor
-  vigil lid-awake on [--duration <preset>] [--force-battery] [--no-dim-display] [--no-dim-keyboard]
+  vigil lid-awake on [--duration <preset>] [--force-battery] [--battery-floor <int>] [--no-dim-display] [--no-dim-keyboard]
   vigil lid-awake off
-  vigil lid-awake toggle [--duration <preset>] [--force-battery]
-  vigil caffeinate on [--duration <preset>] [--force-battery]
+  vigil lid-awake toggle [--duration <preset>] [--force-battery] [--battery-floor <int>]
+  vigil caffeinate on [--duration <preset>] [--force-battery] [--battery-floor <int>]
   vigil caffeinate off
-  vigil caffeinate toggle [--duration <preset>]
+  vigil caffeinate toggle [--duration <preset>] [--battery-floor <int>]
   vigil approve-all
   vigil approval-status
   vigil --version
@@ -39,6 +39,14 @@ Notes:
   Both features survive `vigil` exit and menu-app quit because the assertions
   are held by a per-feature launchd user agent. Keep the machine ventilated
   when running with the lid closed.
+
+  --battery-floor <int>  (1..99): on battery power, the hold agent disables
+                         the feature once the battery drops to this
+                         percentage and (for lid-awake) restores the saved
+                         pmset profile, so the Mac can sleep normally
+                         instead of running flat. Lid-awake requires
+                         Approve All; caffeinate does not. AC restored
+                         later does NOT re-arm the session.
 """
 
 func dispatch(_ arguments: [String]) -> ExitCode {
@@ -114,14 +122,25 @@ func runLidAwake(_ arguments: [String]) throws {
     let rest = arguments.filter { $0 != verb }
     let duration = parseDuration(rest)
     let forceBattery = rest.contains("--force-battery")
+    let batteryFloor = try parseBatteryFloor(rest)
+    let isRearm = rest.contains("--rearm")
 
     switch verb {
     case "on":
-        try LidAwakeController.enable(duration: duration, forceBattery: forceBattery)
+        try LidAwakeController.enable(
+            duration: duration,
+            forceBattery: forceBattery,
+            batteryFloorPercent: batteryFloor,
+            isRearm: isRearm
+        )
     case "off":
         try LidAwakeController.disable()
     case "toggle":
-        try LidAwakeController.toggle(duration: duration, forceBattery: forceBattery)
+        try LidAwakeController.toggle(
+            duration: duration,
+            forceBattery: forceBattery,
+            batteryFloorPercent: batteryFloor
+        )
     case "status":
         let report = Status.build()
         if rest.contains("--json") {
@@ -139,14 +158,25 @@ func runCaffeinate(_ arguments: [String]) throws {
     let rest = arguments.filter { $0 != verb }
     let duration = parseDuration(rest)
     let forceBattery = rest.contains("--force-battery")
+    let batteryFloor = try parseBatteryFloor(rest)
+    let isRearm = rest.contains("--rearm")
 
     switch verb {
     case "on":
-        try CaffeinateController.enable(duration: duration, forceBattery: forceBattery)
+        try CaffeinateController.enable(
+            duration: duration,
+            forceBattery: forceBattery,
+            batteryFloorPercent: batteryFloor,
+            isRearm: isRearm
+        )
     case "off":
         try CaffeinateController.disable()
     case "toggle":
-        try CaffeinateController.toggle(duration: duration, forceBattery: forceBattery)
+        try CaffeinateController.toggle(
+            duration: duration,
+            forceBattery: forceBattery,
+            batteryFloorPercent: batteryFloor
+        )
     case "status":
         let report = Status.build()
         if rest.contains("--json") {
@@ -185,6 +215,27 @@ func parseDuration(_ arguments: [String]) -> Duration {
         return .indefinite
     }
     return parsed
+}
+
+/// Parse `--battery-floor <int>` from the argument vector. Returns `nil`
+/// when the flag is absent. Throws when the value is missing or out of
+/// the `1...99` range — `0` and `100` are degenerate (never trip / always
+/// trip) and rejected loudly rather than silently.
+func parseBatteryFloor(_ arguments: [String]) throws -> Int? {
+    guard let index = arguments.firstIndex(of: "--battery-floor") else {
+        return nil
+    }
+    guard index + 1 < arguments.count else {
+        throw RuntimeError.refused("--battery-floor requires an integer value in the range 1..99.")
+    }
+    let raw = arguments[index + 1]
+    guard let value = Int(raw) else {
+        throw RuntimeError.refused("--battery-floor value '\(raw)' is not an integer.")
+    }
+    guard (1...99).contains(value) else {
+        throw RuntimeError.refused("--battery-floor must be between 1 and 99 (got \(value)).")
+    }
+    return value
 }
 
 exit(dispatch(Array(CommandLine.arguments.dropFirst())).rawValue)

@@ -43,7 +43,12 @@ enum AssertionSet {
 ///      session sentinel exists.
 enum LidAwakeController {
 
-    static func enable(duration: Duration, forceBattery: Bool) throws {
+    static func enable(
+        duration: Duration,
+        forceBattery: Bool,
+        batteryFloorPercent: Int? = nil,
+        isRearm: Bool = false
+    ) throws {
         let battery = BatteryState.load()
         if battery.isBatteryPower && !forceBattery {
             throw RuntimeError.refused("""
@@ -51,6 +56,45 @@ enum LidAwakeController {
             Power source: \(battery.source)
             Re-run with --force-battery if you really want that.
             """)
+        }
+
+        // Battery-floor preflight. Validated here once so the agent's
+        // enforcement loop can trust whatever lands on disk.
+        if let floor = batteryFloorPercent {
+            guard (1...99).contains(floor) else {
+                throw RuntimeError.refused("""
+                --battery-floor must be between 1 and 99 (got \(floor)).
+                """)
+            }
+
+            // Time-limited/auto-disable paths require the approved helper
+            // because the agent has to restore the privileged pmset profile
+            // non-interactively at trip time. Mirrors the menu app's gate
+            // around time-limited Lid-Awake.
+            guard Privilege.approvedHelperIsUsable() else {
+                throw RuntimeError.refused("""
+                --battery-floor requires Approve All so the agent can restore
+                power settings non-interactively when the battery floor trips.
+                Run `vigil approve-all` first.
+                """)
+            }
+
+            // Pre-arm refusal: if we're already at-or-below the floor on
+            // battery, enabling would just race to immediate trip. Loud
+            // foreground refusal is more comprehensible than a session that
+            // dies two seconds in. Skip on `--rearm` so a Sparkle relaunch
+            // path can hand the trip off to the agent's startup-sample
+            // check (which emits a proper `.batteryThreshold` event instead
+            // of orphaning the on-disk session).
+            if !isRearm,
+               battery.isBatteryPower,
+               let percent = battery.internalBatteryPercentInt,
+               percent <= floor {
+                throw RuntimeError.refused("""
+                Battery is at \(percent)%, at or below the configured floor of \(floor)%.
+                Plug in AC power before enabling Lid-Awake, or lower --battery-floor.
+                """)
+            }
         }
 
         try savePmsetSnapshotIfNeeded()
@@ -65,7 +109,12 @@ enum LidAwakeController {
 
         // Persist the session BEFORE touching the sentinel so the hold agent
         // can read its expiry on the first run-loop turn.
-        let session = FeatureSession(feature: .lidAwake, enabledAt: Date(), duration: duration)
+        let session = FeatureSession(
+            feature: .lidAwake,
+            enabledAt: Date(),
+            duration: duration,
+            batteryFloorPercent: batteryFloorPercent
+        )
         try FeatureStateStore.shared.write(session)
         try saveInitialLidTelemetry()
         try LaunchAgent.install(for: .lidAwake)
@@ -86,6 +135,9 @@ enum LidAwakeController {
         print("Lid-awake agent is \(LaunchAgent.isRunning(for: .lidAwake) ? "running" : "not running").")
         if let remaining = session.remainingSeconds() {
             print("Auto-disables in \(remaining) seconds.")
+        }
+        if let floor = batteryFloorPercent {
+            print("Auto-disables when battery drops to \(floor)% on battery power.")
         }
         print("Disable with: vigil lid-awake off")
     }
@@ -136,12 +188,12 @@ enum LidAwakeController {
         )))
     }
 
-    static func toggle(duration: Duration, forceBattery: Bool) throws {
+    static func toggle(duration: Duration, forceBattery: Bool, batteryFloorPercent: Int? = nil) throws {
         let enabled = PowerDomainState.load().sleepDisabled ?? false
         if enabled {
             try disable()
         } else {
-            try enable(duration: duration, forceBattery: forceBattery)
+            try enable(duration: duration, forceBattery: forceBattery, batteryFloorPercent: batteryFloorPercent)
         }
     }
 
@@ -260,7 +312,12 @@ enum LidAwakeController {
 /// exists, and the in-agent expiry timer releases them at the deadline.
 enum CaffeinateController {
 
-    static func enable(duration: Duration, forceBattery: Bool) throws {
+    static func enable(
+        duration: Duration,
+        forceBattery: Bool,
+        batteryFloorPercent: Int? = nil,
+        isRearm: Bool = false
+    ) throws {
         let battery = BatteryState.load()
         if battery.isBatteryPower && !forceBattery {
             // Caffeinate's default is to allow battery — the menu app passes
@@ -270,7 +327,39 @@ enum CaffeinateController {
             print("Note: starting caffeinate on battery power.")
         }
 
-        let session = FeatureSession(feature: .caffeinate, enabledAt: Date(), duration: duration)
+        // Battery-floor preflight. Same shape as `LidAwakeController.enable`,
+        // but without the approved-helper requirement — caffeinate has no
+        // pmset profile to restore, so the agent-side trip handler runs
+        // unprivileged (release IOKit assertions, remove sentinel, exit).
+        if let floor = batteryFloorPercent {
+            guard (1...99).contains(floor) else {
+                throw RuntimeError.refused("""
+                --battery-floor must be between 1 and 99 (got \(floor)).
+                """)
+            }
+
+            // Pre-arm refusal: enabling on battery at-or-below the floor
+            // would just race to immediate trip. Skip on `--rearm` so the
+            // Sparkle relaunch path can hand the trip off to the agent's
+            // startup-sample check (which emits a proper `.batteryThreshold`
+            // event instead of orphaning the on-disk session).
+            if !isRearm,
+               battery.isBatteryPower,
+               let percent = battery.internalBatteryPercentInt,
+               percent <= floor {
+                throw RuntimeError.refused("""
+                Battery is at \(percent)%, at or below the configured floor of \(floor)%.
+                Plug in AC power before enabling Caffeinate, or lower --battery-floor.
+                """)
+            }
+        }
+
+        let session = FeatureSession(
+            feature: .caffeinate,
+            enabledAt: Date(),
+            duration: duration,
+            batteryFloorPercent: batteryFloorPercent
+        )
         try FeatureStateStore.shared.write(session)
         try LaunchAgent.install(for: .caffeinate)
         try FeatureStateStore.shared.touchSentinel(for: .caffeinate)
@@ -286,6 +375,9 @@ enum CaffeinateController {
         print("Caffeinate agent is \(LaunchAgent.isRunning(for: .caffeinate) ? "running" : "not running").")
         if let remaining = session.remainingSeconds() {
             print("Auto-disables in \(remaining) seconds.")
+        }
+        if let floor = batteryFloorPercent {
+            print("Auto-disables when battery drops to \(floor)% on battery power.")
         }
         print("Disable with: vigil caffeinate off")
     }
@@ -321,11 +413,11 @@ enum CaffeinateController {
         )))
     }
 
-    static func toggle(duration: Duration, forceBattery: Bool) throws {
+    static func toggle(duration: Duration, forceBattery: Bool, batteryFloorPercent: Int? = nil) throws {
         if LaunchAgent.isRunning(for: .caffeinate) {
             try disable()
         } else {
-            try enable(duration: duration, forceBattery: forceBattery)
+            try enable(duration: duration, forceBattery: forceBattery, batteryFloorPercent: batteryFloorPercent)
         }
     }
 }
@@ -429,6 +521,50 @@ enum HoldEngine {
             }
         }
 
+        // Battery-floor watchdog. Gated on `session?.batteryFloorPercent` —
+        // applies to BOTH lid-awake and caffeinate when configured. The
+        // teardown shape differs by feature (lid-awake runs the privileged
+        // pmset retry; caffeinate is single-phase), so the trip dispatch
+        // routes through `handleBatteryTrip`.
+        //
+        // Three deliberate design choices, validated by the dual-model +
+        // rubber-duck consensus in docs/0.2.2-design.md:
+        //
+        //   1. Cadence matches the existing 60-second belt-and-suspenders
+        //      so a dev reading this file doesn't have to ask why timer #4
+        //      ticks differently than timer #2.
+        //   2. Sampling happens on a utility queue, not `.main`.
+        //      `BatteryState.load` forks `/usr/bin/pmset`; under disk/CPU
+        //      pressure that fork can stall for seconds. The trip dispatch
+        //      hops back to `.main` for state mutation.
+        //   3. An immediate sample fires before installing the timer so a
+        //      session armed below-floor (Sparkle rearm path with `--rearm`,
+        //      or armed-on-AC-then-immediately-unplugged) trips within a
+        //      second instead of waiting up to 60s.
+        var batteryWatchdog: DispatchSourceTimer?
+        if let floor = session?.batteryFloorPercent {
+            let batteryQueue = DispatchQueue(label: "com.vigil.app.battery-watchdog", qos: .utility)
+
+            let check: () -> Void = {
+                let battery = BatteryState.load()
+                guard battery.isBatteryPower,
+                      let percent = battery.internalBatteryPercentInt,
+                      percent <= floor else { return }
+                DispatchQueue.main.async {
+                    handleBatteryTrip(feature: feature, assertionIDs: assertionIDs, floor: floor, observedPercent: percent)
+                }
+            }
+
+            // Immediate sample.
+            batteryQueue.async { check() }
+
+            let t = DispatchSource.makeTimerSource(queue: batteryQueue)
+            t.schedule(wallDeadline: .now() + 60, repeating: .seconds(60))
+            t.setEventHandler(handler: check)
+            t.resume()
+            batteryWatchdog = t
+        }
+
         // Signal handlers: SIGTERM and SIGINT (sent by launchctl bootout /
         // kill). We use DispatchSource rather than a raw signal() handler
         // so we can do Swift work (file reads, JSON encoding) on a normal
@@ -449,6 +585,7 @@ enum HoldEngine {
         _ = beltTimer
         _ = sentinelWatchdog
         _ = lidPollTimer
+        _ = batteryWatchdog
         _ = sigterm
         _ = sigint
 
@@ -458,41 +595,147 @@ enum HoldEngine {
 
     // MARK: - Exit paths
 
+    /// Termination guard. Once any of the lid-awake termination paths
+    /// (`handleExpiry`, `handleBatteryTrip`, `handleSignaledExit`) starts,
+    /// subsequent invocations no-op. Cheap protection against the race
+    /// between the primary expiry timer, the belt-and-suspenders, the
+    /// battery watchdog, and a user-initiated SIGTERM all firing in the
+    /// same window. The underlying state-store operations are also
+    /// idempotent, so this is belt-on-belt — but it keeps the stderr log
+    /// readable.
+    private static var terminating = false
+    private static let terminationLock = NSLock()
+
+    private static func beginTermination() -> Bool {
+        terminationLock.lock()
+        defer { terminationLock.unlock() }
+        if terminating { return false }
+        terminating = true
+        return true
+    }
+
     /// Called from the primary or belt-and-suspenders timer. For lid-awake
     /// this MUST be able to run the privileged `pmset` restore, which is why
     /// the lid-awake LaunchAgent's `ProgramArguments` includes
     /// `--approved-helper` — `Privilege.useApprovedHelper` reads
     /// `CommandLine.arguments` directly.
     private static func handleExpiry(feature: Feature, assertionIDs: [IOPMAssertionID]) {
-        // Emit FIRST while session/telemetry are still on disk; the
-        // per-controller helper computes elapsed + lid-closed from them.
-        // StatsLog.append is idempotent on sessionID, so a race with the
-        // signal handler is safe.
-        switch feature {
-        case .lidAwake:   LidAwakeController.emitSessionEnded(reason: .timerExpired)
-        case .caffeinate: CaffeinateController.emitSessionEnded(reason: .timerExpired)
-        }
-
-        releaseAssertions(assertionIDs)
-
         switch feature {
         case .lidAwake:
-            try? LidAwakeController.restoreVisualState(removeSnapshot: true)
+            terminateLidAwake(reason: .timerExpired, assertionIDs: assertionIDs)
+        case .caffeinate:
+            terminateCaffeinate(reason: .timerExpired, assertionIDs: assertionIDs)
+        }
+    }
+
+    /// Battery-floor trip handler. Fired by the battery-watchdog timer in
+    /// `HoldEngine.run` when an on-battery sample reads at or below the
+    /// configured floor. Routes per-feature: lid-awake uses the 2-phase
+    /// teardown (privileged pmset restore with bounded retry); caffeinate
+    /// uses the single-phase teardown (no privileged ops).
+    ///
+    /// `observedPercent` is purely for the stderr log — the trip decision
+    /// was already made on the utility queue before dispatching here.
+    private static func handleBatteryTrip(
+        feature: Feature,
+        assertionIDs: [IOPMAssertionID],
+        floor: Int,
+        observedPercent: Int
+    ) {
+        fputs("\(feature.displayName): battery floor tripped at \(observedPercent)% (floor \(floor)%); winding down.\n", stderr)
+        switch feature {
+        case .lidAwake:
+            terminateLidAwake(reason: .batteryThreshold, assertionIDs: assertionIDs)
+        case .caffeinate:
+            terminateCaffeinate(reason: .batteryThreshold, assertionIDs: assertionIDs)
+        }
+    }
+
+    /// Single-phase Caffeinate teardown shared by `handleExpiry(.timerExpired)`
+    /// and `handleBatteryTrip(.batteryThreshold)`.
+    ///
+    /// Unlike Lid-Awake there is no `pmset` profile to restore, no visual
+    /// state to undo, no privileged step. Just emit, release, clean up,
+    /// exit. The `beginTermination` guard prevents the battery-watchdog and
+    /// the expiry timer from racing each other.
+    private static func terminateCaffeinate(reason: StatsEvent.EndReason, assertionIDs: [IOPMAssertionID]) {
+        guard beginTermination() else { return }
+        CaffeinateController.emitSessionEnded(reason: reason)
+        releaseAssertions(assertionIDs)
+        FeatureStateStore.shared.removeSentinel(for: .caffeinate)
+        FeatureStateStore.shared.clear(.caffeinate)
+        Foundation.exit(0)
+    }
+
+    /// Two-phase Lid-Awake teardown shared by `handleExpiry(.timerExpired)`
+    /// and `handleBatteryTrip(.batteryThreshold)`.
+    ///
+    /// **Phase A (always-safe, no privilege required)** — does the work that
+    /// can never fail interestingly: emits the session-ended event (idempotent
+    /// via StatsLog session-ID de-dup), releases IOKit assertions
+    /// (kernel-arbitrated, no userspace failure mode), restores visual
+    /// state best-effort. After Phase A the *user-visible* awake state is
+    /// gone except for `pmset disablesleep=1`.
+    ///
+    /// **Phase B (privileged)** — restore the saved pmset profile. On
+    /// success: remove sentinel + session + telemetry, exit(0). On failure:
+    /// keep the agent process alive, keep sentinel + session on disk (so
+    /// `Status.build`'s `active = (sleepDisabled ?? false) && ...` honestly
+    /// reflects the degraded state), retry on a 30s timer up to a hard cap
+    /// of 2 attempts. After cap: log loudly, remove sentinel + session,
+    /// exit(1). The sentinel removal must happen BEFORE exit(1) so launchd's
+    /// `KeepAlive.PathState` does not re-spawn us in a loop.
+    ///
+    /// The retry cap is intentionally short (~1 minute total) to keep the
+    /// "I'll just `vigil lid-awake on` to reset this" double-bootstrap
+    /// window narrow.
+    private static func terminateLidAwake(reason: StatsEvent.EndReason, assertionIDs: [IOPMAssertionID]) {
+        guard beginTermination() else { return }
+
+        // Phase A — always-safe. Order matters: emit BEFORE removing state
+        // files so `emitSessionEnded` can read session + telemetry.
+        LidAwakeController.emitSessionEnded(reason: reason)
+        releaseAssertions(assertionIDs)
+        try? LidAwakeController.restoreVisualState(removeSnapshot: true)
+        LidTelemetry.remove()
+
+        // Phase B — privileged pmset restore with bounded retry. We hop
+        // onto the main queue so the retry chain composes with the
+        // existing dispatch sources (sentinel watchdog, signal handlers).
+        attemptPmsetRestore(reason: reason, attempt: 1, maxAttempts: 2)
+    }
+
+    private static func attemptPmsetRestore(reason: StatsEvent.EndReason, attempt: Int, maxAttempts: Int) {
+        do {
+            try LidAwakeController.restorePmsetSnapshot()
+            // Success — finalise teardown.
             FeatureStateStore.shared.removeSentinel(for: .lidAwake)
             FeatureStateStore.shared.clear(.lidAwake)
-            LidTelemetry.remove()
-            do {
-                try LidAwakeController.restorePmsetSnapshot()
-            } catch {
-                fputs("Lid-awake auto-expiry: pmset restore failed: \(error)\n", stderr)
+            Foundation.exit(0)
+        } catch {
+            fputs("""
+            Lid-awake teardown (reason=\(reason.rawValue)): pmset restore attempt \(attempt)/\(maxAttempts) failed: \(error)
+            Sentinel + session record left in place so `vigil status` reflects the degraded state.
+
+            """, stderr)
+
+            if attempt >= maxAttempts {
+                fputs("""
+                Lid-awake teardown: retry cap reached; exiting with sleep still disabled.
+                Run `vigil doctor` for details, then `vigil lid-awake off` to restore power settings interactively.
+
+                """, stderr)
+                // Sentinel removal MUST precede exit(1) — otherwise launchd
+                // re-spawns us in a loop via KeepAlive.PathState.
+                FeatureStateStore.shared.removeSentinel(for: .lidAwake)
+                FeatureStateStore.shared.clear(.lidAwake)
+                Foundation.exit(1)
             }
 
-        case .caffeinate:
-            FeatureStateStore.shared.removeSentinel(for: .caffeinate)
-            FeatureStateStore.shared.clear(.caffeinate)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+                attemptPmsetRestore(reason: reason, attempt: attempt + 1, maxAttempts: maxAttempts)
+            }
         }
-
-        Foundation.exit(0)
     }
 
     /// SIGTERM / SIGINT handler. Distinguishes "user-disable through the
@@ -501,6 +744,15 @@ enum HoldEngine {
     /// the session file is still on disk. The StatsLog de-dup also catches
     /// any race.
     private static func handleSignaledExit(feature: Feature, assertionIDs: [IOPMAssertionID]) {
+        // If a terminate is already in flight (e.g. battery trip retry
+        // loop), the signal probably comes from launchd booting us out
+        // because the CLI's user-disable removed the sentinel. Don't
+        // re-enter; just exit promptly.
+        if terminating {
+            releaseAssertions(assertionIDs)
+            Foundation.exit(0)
+        }
+
         if FeatureStateStore.shared.read(feature) != nil {
             switch feature {
             case .lidAwake:   LidAwakeController.emitSessionEnded(reason: .interrupted)

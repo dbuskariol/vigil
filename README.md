@@ -12,6 +12,8 @@
 
 Both features have a shared **time-limit dropdown** with eight presets: Indefinitely, 5 minutes, 10 minutes, 15 minutes, 30 minutes, 1 hour, 2 hours, 5 hours. When a timed session reaches its deadline the feature auto-disables and the system returns to its previous behaviour.
 
+Both features also support a **battery floor**: on battery power, auto-disable the feature once the battery drops to the configured percentage so the Mac can sleep normally instead of running flat. Defaults to **on at 20% for Lid-Awake** (the unattended-by-design case), **off for Caffeinate** (the user-is-present case). Configurable per-feature in the popover or via `--battery-floor <int>` on the CLI. Lid-Awake's floor requires `vigil approve-all`; Caffeinate's does not.
+
 ## Install
 
 1. Download `Vigil-X.Y.Z.dmg` from [the latest release](https://github.com/dbuskariol/vigil/releases/latest).
@@ -41,14 +43,16 @@ vigil status --json                       # machine-readable status
 vigil doctor                              # JSON + verbose human diagnostics
 vigil caffeinate on                       # indefinite caffeinate
 vigil caffeinate on --duration 1h         # 1-hour caffeinate
+vigil caffeinate on --battery-floor 15    # auto-disable at 15% on battery
 vigil caffeinate off
 vigil lid-awake on --duration 2h          # 2-hour lid-closed-awake
+vigil lid-awake on --battery-floor 20     # auto-disable at 20% on battery
 vigil lid-awake off
 vigil approve-all
 vigil approval-status
 ```
 
-`<duration>` is one of `indefinite | 5m | 10m | 15m | 30m | 1h | 2h | 5h`. Default: `indefinite`.
+`<duration>` is one of `indefinite | 5m | 10m | 15m | 30m | 1h | 2h | 5h`. Default: `indefinite`. `--battery-floor` accepts an integer 1–99 (applies to both features).
 
 ### What enable / disable actually do
 
@@ -72,7 +76,7 @@ The menu app does not hold IOKit assertions itself. It is a pure controller: it 
 
 Vigil also reads private IOKit power-domain state for diagnostics (`SleepDisabled`, `AppleClamshellState`, `AppleClamshellCausesSleep`) and uses private Apple APIs (`CoreDisplay`, `DisplayServices`, `CoreBrightness`) for display / keyboard backlight control during Lid-Awake. This design is intentionally not App Store-safe. The goal is reliable awake-on-demand operation, not Apple review.
 
-For the full design rationale see [`docs/0.2.0-design.md`](docs/0.2.0-design.md).
+For the full design rationale see [`docs/0.2.0-design.md`](docs/0.2.0-design.md) (foundational architecture) and [`docs/0.2.2-design.md`](docs/0.2.2-design.md) (Lid-Awake battery floor).
 
 ## Trust model
 
@@ -126,6 +130,13 @@ Release builds (Developer ID + hardened runtime + Sparkle keys) are maintainer-o
 ## Safety
 
 Closed-lid Lid-Awake operation can trap heat. Keep the machine ventilated and prefer AC power. By default, `vigil lid-awake on` refuses to enable while running on battery power; pass `--force-battery` to override (or click **Turn On** a second time in the menu app to confirm).
+
+For unattended battery use, set a **battery floor** so the feature disables itself before the Mac runs flat: `--battery-floor <int>` on the CLI (1–99), or the **Disable on low battery** toggle in each feature's card in the popover.
+
+- **Lid-Awake**: default **on** at 20%. Requires `vigil approve-all` so the agent can restore the pmset profile non-interactively. On trip, the agent restores the saved `pmset` profile and exits.
+- **Caffeinate**: default **off** (Caffeinate is the user-present case; auto-disable mid-task would surprise). Enable per-session if you want the safety net. No `pmset`, no helper requirement — the agent just releases its IOKit assertions and exits.
+
+In both cases the trip is one-way — plugging AC back in does not auto-re-enable the feature.
 
 ## License
 
