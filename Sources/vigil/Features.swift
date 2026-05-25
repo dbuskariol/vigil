@@ -312,7 +312,12 @@ enum LidAwakeController {
 /// exists, and the in-agent expiry timer releases them at the deadline.
 enum CaffeinateController {
 
-    static func enable(duration: Duration, forceBattery: Bool) throws {
+    static func enable(
+        duration: Duration,
+        forceBattery: Bool,
+        batteryFloorPercent: Int? = nil,
+        isRearm: Bool = false
+    ) throws {
         let battery = BatteryState.load()
         if battery.isBatteryPower && !forceBattery {
             // Caffeinate's default is to allow battery — the menu app passes
@@ -322,7 +327,39 @@ enum CaffeinateController {
             print("Note: starting caffeinate on battery power.")
         }
 
-        let session = FeatureSession(feature: .caffeinate, enabledAt: Date(), duration: duration)
+        // Battery-floor preflight. Same shape as `LidAwakeController.enable`,
+        // but without the approved-helper requirement — caffeinate has no
+        // pmset profile to restore, so the agent-side trip handler runs
+        // unprivileged (release IOKit assertions, remove sentinel, exit).
+        if let floor = batteryFloorPercent {
+            guard (1...99).contains(floor) else {
+                throw RuntimeError.refused("""
+                --battery-floor must be between 1 and 99 (got \(floor)).
+                """)
+            }
+
+            // Pre-arm refusal: enabling on battery at-or-below the floor
+            // would just race to immediate trip. Skip on `--rearm` so the
+            // Sparkle relaunch path can hand the trip off to the agent's
+            // startup-sample check (which emits a proper `.batteryThreshold`
+            // event instead of orphaning the on-disk session).
+            if !isRearm,
+               battery.isBatteryPower,
+               let percent = battery.internalBatteryPercentInt,
+               percent <= floor {
+                throw RuntimeError.refused("""
+                Battery is at \(percent)%, at or below the configured floor of \(floor)%.
+                Plug in AC power before enabling Caffeinate, or lower --battery-floor.
+                """)
+            }
+        }
+
+        let session = FeatureSession(
+            feature: .caffeinate,
+            enabledAt: Date(),
+            duration: duration,
+            batteryFloorPercent: batteryFloorPercent
+        )
         try FeatureStateStore.shared.write(session)
         try LaunchAgent.install(for: .caffeinate)
         try FeatureStateStore.shared.touchSentinel(for: .caffeinate)
@@ -338,6 +375,9 @@ enum CaffeinateController {
         print("Caffeinate agent is \(LaunchAgent.isRunning(for: .caffeinate) ? "running" : "not running").")
         if let remaining = session.remainingSeconds() {
             print("Auto-disables in \(remaining) seconds.")
+        }
+        if let floor = batteryFloorPercent {
+            print("Auto-disables when battery drops to \(floor)% on battery power.")
         }
         print("Disable with: vigil caffeinate off")
     }
@@ -373,11 +413,11 @@ enum CaffeinateController {
         )))
     }
 
-    static func toggle(duration: Duration, forceBattery: Bool) throws {
+    static func toggle(duration: Duration, forceBattery: Bool, batteryFloorPercent: Int? = nil) throws {
         if LaunchAgent.isRunning(for: .caffeinate) {
             try disable()
         } else {
-            try enable(duration: duration, forceBattery: forceBattery)
+            try enable(duration: duration, forceBattery: forceBattery, batteryFloorPercent: batteryFloorPercent)
         }
     }
 }
@@ -481,27 +521,28 @@ enum HoldEngine {
             }
         }
 
-        // Lid-awake-only: battery-floor watchdog. Gated on `session?.batteryFloorPercent`
-        // so we don't fork a `pmset` subprocess for sessions that don't need it.
+        // Battery-floor watchdog. Gated on `session?.batteryFloorPercent` —
+        // applies to BOTH lid-awake and caffeinate when configured. The
+        // teardown shape differs by feature (lid-awake runs the privileged
+        // pmset retry; caffeinate is single-phase), so the trip dispatch
+        // routes through `handleBatteryTrip`.
         //
-        // Three deliberate design choices, validated by the dual-model + rubber-duck
-        // consensus in docs/0.2.2-design.md:
+        // Three deliberate design choices, validated by the dual-model +
+        // rubber-duck consensus in docs/0.2.2-design.md:
         //
-        //   1. Cadence matches the existing 60-second belt-and-suspenders so a dev
-        //      reading this file doesn't have to ask why timer #4 ticks differently
-        //      than timer #2. At realistic discharge rates (<1%/min idle, ~1%/min
-        //      under load) trip latency past the floor is bounded at ~1%.
-        //   2. Sampling happens on a utility queue, not `.main`. `BatteryState.load`
-        //      forks `/usr/bin/pmset`; under disk/CPU pressure that fork can stall
-        //      for seconds. If that ran on `.main`, the 1Hz sentinel watchdog,
-        //      the lid-poll timer, and the SIGTERM/SIGINT dispatch sources would
-        //      all starve. The trip dispatch itself hops back to `.main`.
-        //   3. An immediate sample fires before installing the timer so a session
-        //      that armed below-floor (Sparkle rearm path with `--rearm`, or
-        //      armed-on-AC-then-immediately-unplugged) trips within a second
-        //      instead of waiting up to 60s.
+        //   1. Cadence matches the existing 60-second belt-and-suspenders
+        //      so a dev reading this file doesn't have to ask why timer #4
+        //      ticks differently than timer #2.
+        //   2. Sampling happens on a utility queue, not `.main`.
+        //      `BatteryState.load` forks `/usr/bin/pmset`; under disk/CPU
+        //      pressure that fork can stall for seconds. The trip dispatch
+        //      hops back to `.main` for state mutation.
+        //   3. An immediate sample fires before installing the timer so a
+        //      session armed below-floor (Sparkle rearm path with `--rearm`,
+        //      or armed-on-AC-then-immediately-unplugged) trips within a
+        //      second instead of waiting up to 60s.
         var batteryWatchdog: DispatchSourceTimer?
-        if feature == .lidAwake, let floor = session?.batteryFloorPercent {
+        if let floor = session?.batteryFloorPercent {
             let batteryQueue = DispatchQueue(label: "com.vigil.app.battery-watchdog", qos: .utility)
 
             let check: () -> Void = {
@@ -583,22 +624,15 @@ enum HoldEngine {
         case .lidAwake:
             terminateLidAwake(reason: .timerExpired, assertionIDs: assertionIDs)
         case .caffeinate:
-            // Caffeinate has no pmset profile to restore, no visual state,
-            // and no privileged operations. Single-phase teardown.
-            guard beginTermination() else { return }
-            CaffeinateController.emitSessionEnded(reason: .timerExpired)
-            releaseAssertions(assertionIDs)
-            FeatureStateStore.shared.removeSentinel(for: .caffeinate)
-            FeatureStateStore.shared.clear(.caffeinate)
-            Foundation.exit(0)
+            terminateCaffeinate(reason: .timerExpired, assertionIDs: assertionIDs)
         }
     }
 
     /// Battery-floor trip handler. Fired by the battery-watchdog timer in
     /// `HoldEngine.run` when an on-battery sample reads at or below the
-    /// configured floor. Same shape as a timer expiry: emit
-    /// `.batteryThreshold`, release assertions, restore visuals, retry
-    /// the privileged pmset restore, then exit.
+    /// configured floor. Routes per-feature: lid-awake uses the 2-phase
+    /// teardown (privileged pmset restore with bounded retry); caffeinate
+    /// uses the single-phase teardown (no privileged ops).
     ///
     /// `observedPercent` is purely for the stderr log — the trip decision
     /// was already made on the utility queue before dispatching here.
@@ -608,9 +642,29 @@ enum HoldEngine {
         floor: Int,
         observedPercent: Int
     ) {
-        guard feature == .lidAwake else { return }  // Caffeinate has no floor.
-        fputs("Lid-awake: battery floor tripped at \(observedPercent)% (floor \(floor)%); winding down.\n", stderr)
-        terminateLidAwake(reason: .batteryThreshold, assertionIDs: assertionIDs)
+        fputs("\(feature.displayName): battery floor tripped at \(observedPercent)% (floor \(floor)%); winding down.\n", stderr)
+        switch feature {
+        case .lidAwake:
+            terminateLidAwake(reason: .batteryThreshold, assertionIDs: assertionIDs)
+        case .caffeinate:
+            terminateCaffeinate(reason: .batteryThreshold, assertionIDs: assertionIDs)
+        }
+    }
+
+    /// Single-phase Caffeinate teardown shared by `handleExpiry(.timerExpired)`
+    /// and `handleBatteryTrip(.batteryThreshold)`.
+    ///
+    /// Unlike Lid-Awake there is no `pmset` profile to restore, no visual
+    /// state to undo, no privileged step. Just emit, release, clean up,
+    /// exit. The `beginTermination` guard prevents the battery-watchdog and
+    /// the expiry timer from racing each other.
+    private static func terminateCaffeinate(reason: StatsEvent.EndReason, assertionIDs: [IOPMAssertionID]) {
+        guard beginTermination() else { return }
+        CaffeinateController.emitSessionEnded(reason: reason)
+        releaseAssertions(assertionIDs)
+        FeatureStateStore.shared.removeSentinel(for: .caffeinate)
+        FeatureStateStore.shared.clear(.caffeinate)
+        Foundation.exit(0)
     }
 
     /// Two-phase Lid-Awake teardown shared by `handleExpiry(.timerExpired)`

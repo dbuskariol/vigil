@@ -312,21 +312,23 @@ struct BatteryFloorMenu: View {
     }
 }
 
-/// The Lid-Awake battery-floor control: a checkbox-style `Toggle` paired
-/// with the `BatteryFloorMenu` presets and an always-visible caption
-/// describing what the toggle does.
+/// The battery-floor control: a checkbox-style `Toggle` paired with the
+/// `BatteryFloorMenu` presets and an always-visible caption describing
+/// what the toggle does. Used by both the Lid-Awake and Caffeinate card
+/// accessories — the per-feature default state (Lid-Awake on, Caffeinate
+/// off) lives in `FeatureViewModel.init`.
 ///
 /// The caption is the disclosure surface for the default-enabled toggle —
-/// the battery-confirmation modal (`AppCoordinator.turnOn`) already
-/// discloses the floor when the user is on battery, but most users hit
-/// Turn On while on AC. Without the caption, default-on would be a silent
-/// behaviour change on the first battery use. With the caption, the toggle
-/// is self-describing at every glance.
+/// for Lid-Awake the battery-confirmation modal (`AppCoordinator.turnOn`)
+/// also discloses the floor when the user is on battery, but most users
+/// hit Turn On while on AC. Without the caption, default-on would be a
+/// silent behaviour change on the first battery use. With the caption,
+/// the toggle is self-describing at every glance.
 ///
 /// On a no-battery Mac (`StatusReport.battery.percent == nil`) the control
 /// disables itself with a tooltip; the trip predicate would never fire by
 /// construction.
-struct LidAwakeBatteryFloorControl: View {
+struct BatteryFloorControl: View {
     @ObservedObject var vm: FeatureViewModel
     let isBusy: Bool
     let hasInternalBattery: Bool
@@ -351,7 +353,7 @@ struct LidAwakeBatteryFloorControl: View {
                 .font(.caption)
                 Spacer(minLength: 0)
             }
-            Text("Auto-disables Lid-Awake on battery so the Mac sleeps normally.")
+            Text("Auto-disables \(vm.feature.displayName) on battery so the Mac sleeps normally.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -359,7 +361,7 @@ struct LidAwakeBatteryFloorControl: View {
         .disabled(vm.isActive || isBusy || !hasInternalBattery)
         .foregroundStyle(.secondary)
         .help(hasInternalBattery
-              ? "When the Mac is on battery and drops to this percentage, Lid-Awake disables itself so the Mac can sleep normally."
+              ? "When the Mac is on battery and drops to this percentage, \(vm.feature.displayName) disables itself so the Mac can sleep normally."
               : "This Mac has no internal battery.")
     }
 }
@@ -783,7 +785,11 @@ struct MenuContentView: View {
                     set: { coordinator.notifyOnExpiryCaffeinate = $0 }
                 )
             ) {
-                EmptyView()
+                BatteryFloorControl(
+                    vm: coordinator.caffeinate,
+                    isBusy: coordinator.isBusy,
+                    hasInternalBattery: coordinator.statusReport?.battery.percent != nil
+                )
             }
 
             FeatureCard(
@@ -829,7 +835,7 @@ struct MenuContentView: View {
                             Spacer()
                         }
                     }
-                    LidAwakeBatteryFloorControl(
+                    BatteryFloorControl(
                         vm: coordinator.lidAwake,
                         isBusy: coordinator.isBusy,
                         hasInternalBattery: coordinator.statusReport?.battery.percent != nil

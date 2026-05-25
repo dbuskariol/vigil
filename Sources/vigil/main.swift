@@ -11,9 +11,9 @@ Usage:
   vigil lid-awake on [--duration <preset>] [--force-battery] [--battery-floor <int>] [--no-dim-display] [--no-dim-keyboard]
   vigil lid-awake off
   vigil lid-awake toggle [--duration <preset>] [--force-battery] [--battery-floor <int>]
-  vigil caffeinate on [--duration <preset>] [--force-battery]
+  vigil caffeinate on [--duration <preset>] [--force-battery] [--battery-floor <int>]
   vigil caffeinate off
-  vigil caffeinate toggle [--duration <preset>]
+  vigil caffeinate toggle [--duration <preset>] [--battery-floor <int>]
   vigil approve-all
   vigil approval-status
   vigil --version
@@ -40,12 +40,13 @@ Notes:
   are held by a per-feature launchd user agent. Keep the machine ventilated
   when running with the lid closed.
 
-  --battery-floor <int>  (lid-awake only, 1..99): on battery power, the hold
-                         agent disables Lid-Awake once the battery drops to
-                         this percentage and restores the saved pmset profile,
-                         so the Mac can sleep normally instead of running flat.
-                         Requires Approve All. AC restored later does NOT
-                         re-arm the session.
+  --battery-floor <int>  (1..99): on battery power, the hold agent disables
+                         the feature once the battery drops to this
+                         percentage and (for lid-awake) restores the saved
+                         pmset profile, so the Mac can sleep normally
+                         instead of running flat. Lid-awake requires
+                         Approve All; caffeinate does not. AC restored
+                         later does NOT re-arm the session.
 """
 
 func dispatch(_ arguments: [String]) -> ExitCode {
@@ -157,14 +158,25 @@ func runCaffeinate(_ arguments: [String]) throws {
     let rest = arguments.filter { $0 != verb }
     let duration = parseDuration(rest)
     let forceBattery = rest.contains("--force-battery")
+    let batteryFloor = try parseBatteryFloor(rest)
+    let isRearm = rest.contains("--rearm")
 
     switch verb {
     case "on":
-        try CaffeinateController.enable(duration: duration, forceBattery: forceBattery)
+        try CaffeinateController.enable(
+            duration: duration,
+            forceBattery: forceBattery,
+            batteryFloorPercent: batteryFloor,
+            isRearm: isRearm
+        )
     case "off":
         try CaffeinateController.disable()
     case "toggle":
-        try CaffeinateController.toggle(duration: duration, forceBattery: forceBattery)
+        try CaffeinateController.toggle(
+            duration: duration,
+            forceBattery: forceBattery,
+            batteryFloorPercent: batteryFloor
+        )
     case "status":
         let report = Status.build()
         if rest.contains("--json") {
