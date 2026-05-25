@@ -17,7 +17,7 @@ The release build path (`make release VERSION=…`) requires a Developer ID iden
 
 - Run `swift build -c release` and `make app` locally before opening the PR.
 - Keep changes scoped. Identifier constants live in `Sources/VigilIdentifiers/`; do not duplicate them.
-- Touching anything in the elevation paths (`Sources/vigil/main.swift` install / sudoers / helper logic, or the AppleScript `do shell script with administrator privileges` flow in `Sources/VigilMenuBar/main.swift`) gets extra scrutiny — the threat model is described in `README.md` under "Trust model".
+- Touching anything in the elevation paths (`Sources/vigil/Privilege.swift` install / sudoers / helper logic, or the AppleScript `do shell script with administrator privileges` flow in `Sources/VigilMenuBar/Helper.swift`) gets extra scrutiny — the trust model is documented in [`SECURITY.md`](SECURITY.md) and the foundational design rationale lives in [`docs/0.2.0-design.md`](docs/0.2.0-design.md).
 
 ## Releasing
 
