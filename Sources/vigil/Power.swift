@@ -117,6 +117,30 @@ struct BatteryState {
             .filter { !$0.isEmpty }
         return (pieces.first ?? "Unknown", pieces.dropFirst().first ?? "Unknown")
     }
+
+    /// Internal-battery percent as a typed `Int`, parsed from the same
+    /// `pmset -g batt` output that drives `BatteryState.load()`. Strips the
+    /// trailing `%` and clamps to `0...100`; returns `nil` when no
+    /// internal battery is present (desktop Macs, missing `-InternalBattery-`
+    /// line).
+    ///
+    /// Used by the Lid-Awake battery-floor enforcement loop in `HoldEngine`
+    /// and the pre-arm refusal in `LidAwakeController.enable`. Reuses the
+    /// existing pmset path rather than introducing IOKit's
+    /// `IOPSCopyPowerSourcesInfo` — both read the same SMC-backed registry,
+    /// and the additional surface area is not warranted for a patch release.
+    var internalBatteryPercentInt: Int? {
+        let lines = detail.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        guard let line = lines.first(where: { $0.hasPrefix("-InternalBattery-") }) else {
+            return nil
+        }
+        let (percent, _) = Self.parseInternalBattery(line)
+        let trimmed = percent
+            .replacingOccurrences(of: "%", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let value = Int(trimmed) else { return nil }
+        return max(0, min(100, value))
+    }
 }
 
 struct DisplayState {

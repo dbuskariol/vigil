@@ -15,12 +15,30 @@ public struct FeatureSession: Codable, Equatable, Sendable {
     public let feature: Feature
     public let enabledAt: Date
     public let duration: Duration
+    /// Lid-Awake battery-floor (0.2.2+). When set and the Mac is on battery,
+    /// the hold agent disables the feature once `batteryPercent <= floor`,
+    /// restoring the saved `pmset` profile so the Mac can sleep normally
+    /// instead of running flat. `nil` means no floor.
+    ///
+    /// One-way exit: once tripped, plugging AC back in does NOT re-arm.
+    /// Lid-Awake only — caffeinate sessions ignore this field even if set.
+    ///
+    /// Optional + nil-defaulted so on-disk sessions persisted by 0.2.1
+    /// continue to decode without migration.
+    public let batteryFloorPercent: Int?
 
-    public init(id: UUID = UUID(), feature: Feature, enabledAt: Date, duration: Duration) {
+    public init(
+        id: UUID = UUID(),
+        feature: Feature,
+        enabledAt: Date,
+        duration: Duration,
+        batteryFloorPercent: Int? = nil
+    ) {
         self.id = id
         self.feature = feature
         self.enabledAt = enabledAt
         self.duration = duration
+        self.batteryFloorPercent = batteryFloorPercent
     }
 
     public var expiresAt: Date? {

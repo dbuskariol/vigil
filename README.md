@@ -43,12 +43,13 @@ vigil caffeinate on                       # indefinite caffeinate
 vigil caffeinate on --duration 1h         # 1-hour caffeinate
 vigil caffeinate off
 vigil lid-awake on --duration 2h          # 2-hour lid-closed-awake
+vigil lid-awake on --battery-floor 20     # auto-disable at 20% on battery
 vigil lid-awake off
 vigil approve-all
 vigil approval-status
 ```
 
-`<duration>` is one of `indefinite | 5m | 10m | 15m | 30m | 1h | 2h | 5h`. Default: `indefinite`.
+`<duration>` is one of `indefinite | 5m | 10m | 15m | 30m | 1h | 2h | 5h`. Default: `indefinite`. `--battery-floor` accepts an integer 1–99 (lid-awake only).
 
 ### What enable / disable actually do
 
@@ -72,7 +73,7 @@ The menu app does not hold IOKit assertions itself. It is a pure controller: it 
 
 Vigil also reads private IOKit power-domain state for diagnostics (`SleepDisabled`, `AppleClamshellState`, `AppleClamshellCausesSleep`) and uses private Apple APIs (`CoreDisplay`, `DisplayServices`, `CoreBrightness`) for display / keyboard backlight control during Lid-Awake. This design is intentionally not App Store-safe. The goal is reliable awake-on-demand operation, not Apple review.
 
-For the full design rationale see [`docs/0.2.0-design.md`](docs/0.2.0-design.md).
+For the full design rationale see [`docs/0.2.0-design.md`](docs/0.2.0-design.md) (foundational architecture) and [`docs/0.2.2-design.md`](docs/0.2.2-design.md) (Lid-Awake battery floor).
 
 ## Trust model
 
@@ -126,6 +127,8 @@ Release builds (Developer ID + hardened runtime + Sparkle keys) are maintainer-o
 ## Safety
 
 Closed-lid Lid-Awake operation can trap heat. Keep the machine ventilated and prefer AC power. By default, `vigil lid-awake on` refuses to enable while running on battery power; pass `--force-battery` to override (or click **Turn On** a second time in the menu app to confirm).
+
+For unattended battery use, set a **battery floor** so Lid-Awake disables itself before the Mac runs flat: `--battery-floor 20` on the CLI, or the **Disable on low battery** toggle in the popover (default on at 20%). When the battery drops to the configured percentage on battery power, the agent restores the saved `pmset` profile and exits cleanly so the Mac can sleep normally. The trip is one-way — plugging AC back in does not auto-re-enable Lid-Awake. The battery floor requires `vigil approve-all` so the agent can restore power settings non-interactively.
 
 ## License
 

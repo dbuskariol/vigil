@@ -179,6 +179,12 @@ public struct StatusReport: Codable, Sendable {
             public let longestSessionSeconds: Int
             public let lastEnabledAt: Date?
             public let danglingSessionCount: Int
+            /// End-reason of the most recently ended session, as folded
+            /// from the event log (`StatsAggregate.PerFeature.lastEndReason`).
+            /// Drives reason-aware notification copy in the menu app — e.g.
+            /// `"Lid-Awake disabled — battery low"` for `.batteryThreshold`.
+            /// nil when no session has ended yet.
+            public let lastEndReason: StatsEvent.EndReason?
 
             public init(
                 sessionCount: Int,
@@ -186,7 +192,8 @@ public struct StatusReport: Codable, Sendable {
                 totalLidClosedSeconds: Int,
                 longestSessionSeconds: Int,
                 lastEnabledAt: Date?,
-                danglingSessionCount: Int
+                danglingSessionCount: Int,
+                lastEndReason: StatsEvent.EndReason? = nil
             ) {
                 self.sessionCount = sessionCount
                 self.totalEnabledSeconds = totalEnabledSeconds
@@ -194,6 +201,7 @@ public struct StatusReport: Codable, Sendable {
                 self.longestSessionSeconds = longestSessionSeconds
                 self.lastEnabledAt = lastEnabledAt
                 self.danglingSessionCount = danglingSessionCount
+                self.lastEndReason = lastEndReason
             }
 
             public static let zero = Stats(
@@ -202,7 +210,8 @@ public struct StatusReport: Codable, Sendable {
                 totalLidClosedSeconds: 0,
                 longestSessionSeconds: 0,
                 lastEnabledAt: nil,
-                danglingSessionCount: 0
+                danglingSessionCount: 0,
+                lastEndReason: nil
             )
         }
 

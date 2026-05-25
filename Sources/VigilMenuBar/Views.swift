@@ -276,6 +276,94 @@ struct LidAwakeVisualToggles: View {
     }
 }
 
+// MARK: - Lid-awake battery floor
+
+/// `Menu`-wrapped inline `Picker` for the lid-awake battery-floor presets,
+/// modelled byte-for-byte on `DurationMenu` so it inherits the same visual
+/// language users already know in the popover. Five presets (10/15/20/25/30%)
+/// — coarser loses meaningful choice, finer is decision paralysis with no
+/// practical difference. CLI keeps the full `1...99` range for power users.
+struct BatteryFloorMenu: View {
+    @Binding var selection: Int
+    let disabled: Bool
+
+    static let presets: [Int] = [10, 15, 20, 25, 30]
+
+    var body: some View {
+        Menu {
+            Picker("Battery floor", selection: $selection) {
+                ForEach(Self.presets, id: \.self) { value in
+                    Text("\(value)%").tag(value)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            HStack(spacing: 4) {
+                Text("\(selection)%").font(.system(size: 12, weight: .medium))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(disabled ? .secondary : .primary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(disabled)
+    }
+}
+
+/// The Lid-Awake battery-floor control: a checkbox-style `Toggle` paired
+/// with the `BatteryFloorMenu` presets and an always-visible caption
+/// describing what the toggle does.
+///
+/// The caption is the disclosure surface for the default-enabled toggle —
+/// the battery-confirmation modal (`AppCoordinator.turnOn`) already
+/// discloses the floor when the user is on battery, but most users hit
+/// Turn On while on AC. Without the caption, default-on would be a silent
+/// behaviour change on the first battery use. With the caption, the toggle
+/// is self-describing at every glance.
+///
+/// On a no-battery Mac (`StatusReport.battery.percent == nil`) the control
+/// disables itself with a tooltip; the trip predicate would never fire by
+/// construction.
+struct LidAwakeBatteryFloorControl: View {
+    @ObservedObject var vm: FeatureViewModel
+    let isBusy: Bool
+    let hasInternalBattery: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Toggle("Disable on low battery", isOn: Binding(
+                    get: { vm.batteryFloorEnabled },
+                    set: { vm.batteryFloorEnabled = $0 }
+                ))
+                .toggleStyle(.checkbox)
+                .font(.caption)
+
+                BatteryFloorMenu(
+                    selection: Binding(
+                        get: { vm.batteryFloorPercent },
+                        set: { vm.batteryFloorPercent = $0 }
+                    ),
+                    disabled: !vm.batteryFloorEnabled || vm.isActive || isBusy || !hasInternalBattery
+                )
+                .font(.caption)
+                Spacer(minLength: 0)
+            }
+            Text("Auto-disables Lid-Awake on battery so the Mac sleeps normally.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .disabled(vm.isActive || isBusy || !hasInternalBattery)
+        .foregroundStyle(.secondary)
+        .help(hasInternalBattery
+              ? "When the Mac is on battery and drops to this percentage, Lid-Awake disables itself so the Mac can sleep normally."
+              : "This Mac has no internal battery.")
+    }
+}
+
 // MARK: - Feature stats row
 
 /// Compact stats display inside each FeatureCard, below the Duration row.
@@ -741,12 +829,23 @@ struct MenuContentView: View {
                             Spacer()
                         }
                     }
+                    LidAwakeBatteryFloorControl(
+                        vm: coordinator.lidAwake,
+                        isBusy: coordinator.isBusy,
+                        hasInternalBattery: coordinator.statusReport?.battery.percent != nil
+                    )
                     LidAwakeVisualToggles(
                         lidAwakeActive: coordinator.lidAwake.isActive,
                         isBusy: coordinator.isBusy
                     )
                     if coordinator.lidAwake.duration != .indefinite && !coordinator.helperApproved {
                         Text("Time-limited lid-awake requires Approve All so the timer can restore power settings.")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if coordinator.lidAwake.effectiveBatteryFloor != nil && !coordinator.helperApproved {
+                        Text("Battery floor requires Approve All so the agent can restore power settings non-interactively.")
                             .font(.caption2)
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
