@@ -17,17 +17,54 @@ final class FeatureViewModel: ObservableObject {
     /// menu-app-scoped (it's the picker's remembered value).
     @AppStorage private var durationRawValue: String
 
+    /// Lid-Awake battery-floor toggle. Default-enabled at 20% so users get
+    /// the "don't run my Mac flat" safety net by default. The disclosure
+    /// surface for this is the always-visible caption on the
+    /// `BatteryFloorMenu` plus the battery-confirmation modal copy in
+    /// `AppCoordinator.turnOn` — together they make the default-on choice
+    /// defensible without a one-shot toast.
+    ///
+    /// Only used for `.lidAwake`. Caffeinate ignores these values even if
+    /// the keys happen to exist (e.g. user-edited defaults plist).
+    @AppStorage private var batteryFloorEnabledRaw: Bool
+    @AppStorage private var batteryFloorPercentRaw: Int
+
     init(feature: Feature) {
         self.feature = feature
         self._durationRawValue = AppStorage(
             wrappedValue: Duration.indefinite.rawValue,
             "duration-\(feature.rawValue)"
         )
+        self._batteryFloorEnabledRaw = AppStorage(
+            wrappedValue: true,
+            "batteryFloor.\(feature.rawValue).enabled"
+        )
+        self._batteryFloorPercentRaw = AppStorage(
+            wrappedValue: 20,
+            "batteryFloor.\(feature.rawValue).percent"
+        )
     }
 
     var duration: Duration {
         get { Duration(rawValue: durationRawValue) ?? .indefinite }
         set { durationRawValue = newValue.rawValue }
+    }
+
+    var batteryFloorEnabled: Bool {
+        get { batteryFloorEnabledRaw }
+        set { batteryFloorEnabledRaw = newValue }
+    }
+
+    var batteryFloorPercent: Int {
+        get { batteryFloorPercentRaw }
+        set { batteryFloorPercentRaw = newValue }
+    }
+
+    /// The effective floor passed to the CLI on enable: `nil` when the
+    /// toggle is off OR when the feature is not lid-awake.
+    var effectiveBatteryFloor: Int? {
+        guard feature == .lidAwake, batteryFloorEnabled else { return nil }
+        return batteryFloorPercent
     }
 
     var isActive: Bool { snapshot?.active ?? false }
@@ -146,13 +183,22 @@ final class AppCoordinator: ObservableObject {
 
         // Lid-awake refuses battery without explicit confirmation; the
         // user must opt in. Caffeinate's default is to allow battery.
+        //
+        // When a battery-floor is configured, the modal copy discloses it
+        // so the user opts in fully informed — this is what makes the
+        // default-enabled battery-floor toggle (FeatureViewModel) a
+        // non-silent behaviour change in 0.2.2.
         let requireBatteryConfirm = (feature == .lidAwake)
             && onBattery
             && pendingBatteryConfirmation != feature
 
         if requireBatteryConfirm {
             pendingBatteryConfirmation = feature
-            lastMessage = "On battery power. Click Turn On again to confirm."
+            if let floor = viewModel.effectiveBatteryFloor {
+                lastMessage = "On battery — Lid-Awake will auto-disable below \(floor)%. Click Turn On again to confirm."
+            } else {
+                lastMessage = "On battery — no battery floor configured. Lid-Awake will run until you stop it. Click Turn On again to confirm."
+            }
             return
         }
 
@@ -160,17 +206,27 @@ final class AppCoordinator: ObservableObject {
         // the agent-side auto-restore of pmset settings goes through the
         // privileged helper. Indefinite lid-awake still works without
         // approval (the menu app can run `off` interactively via
-        // --admin-prompt to undo it manually).
+        // --admin-prompt to undo it manually). Same gate applies if the
+        // user wants a battery floor — the agent's trip path also needs
+        // non-interactive privilege.
         if feature == .lidAwake
-            && viewModel.duration != .indefinite
+            && (viewModel.duration != .indefinite || viewModel.effectiveBatteryFloor != nil)
             && !helperApproved {
-            lastMessage = "Time-limited lid-awake requires Approve All so the timer can restore power settings non-interactively."
+            if viewModel.effectiveBatteryFloor != nil && viewModel.duration == .indefinite {
+                lastMessage = "Battery floor requires Approve All so the agent can restore power settings non-interactively."
+            } else {
+                lastMessage = "Time-limited lid-awake requires Approve All so the timer can restore power settings non-interactively."
+            }
             return
         }
 
         pendingBatteryConfirmation = nil
         runAction(feature: feature) { args in
-            args + Self.enableArguments(feature: feature, duration: viewModel.duration)
+            args + Self.enableArguments(
+                feature: feature,
+                duration: viewModel.duration,
+                batteryFloor: viewModel.effectiveBatteryFloor
+            )
         }
     }
 
@@ -284,7 +340,12 @@ final class AppCoordinator: ObservableObject {
             }
 
             // Emit opt-in expiry notifications for features that transitioned
-            // active → inactive since the last refresh.
+            // active → inactive since the last refresh. The notification
+            // body is reason-aware AND restore-aware — if `.batteryThreshold`
+            // fired but `power.sleepDisabled` is still true, the agent's
+            // retry-cap exhausted and the user is in a stuck-pmset state.
+            // Saying "battery low — disabled cleanly" would lie about the
+            // safety feature working.
             for feature in Feature.allCases {
                 let nowActive = (feature == .caffeinate ? caffeinate.isActive : lidAwake.isActive)
                 if previousActive[feature] == true && !nowActive {
@@ -292,7 +353,14 @@ final class AppCoordinator: ObservableObject {
                         ? notifyOnExpiryCaffeinate
                         : notifyOnExpiryLidAwake
                     if shouldNotify {
-                        await ExpiryNotifier.notify(feature: feature)
+                        let snapshot = report.features.first(where: { $0.feature == feature })
+                        let lastEndReason = snapshot?.stats.lastEndReason
+                        let sleepStillDisabled = report.power.sleepDisabled ?? false
+                        await ExpiryNotifier.notify(
+                            feature: feature,
+                            lastEndReason: lastEndReason,
+                            sleepStillDisabled: sleepStillDisabled
+                        )
                     }
                 }
                 previousActive[feature] = nowActive
@@ -319,18 +387,32 @@ final class AppCoordinator: ObservableObject {
             // bootstraps the agent.
             guard !snapshot.agentRunning else { continue }
 
+            // Rebuild from the persisted session's own fields — not from
+            // the menu app's `@AppStorage`. The on-disk session is the
+            // truth for the currently-running session; AppStorage is only
+            // the picker default for the *next* enable. This is what makes
+            // a CLI-originated session (which never touched AppStorage)
+            // round-trip correctly through a Sparkle relaunch.
             let args = Self.enableArguments(
                 feature: snapshot.feature,
-                duration: session.duration
+                duration: session.duration,
+                batteryFloor: session.batteryFloorPercent
             )
             switch snapshot.feature {
             case .caffeinate:
                 _ = await Helper.run(["caffeinate"] + args + ["--force-battery"])
             case .lidAwake:
+                // `--rearm` bypasses the CLI's pre-arm refusal so a session
+                // that's now at-or-below its floor (battery dropped while
+                // we were Sparkle-relaunching) still gets re-armed. The
+                // agent's immediate startup sample then fires a clean
+                // `.batteryThreshold` trip instead of orphaning the
+                // on-disk session record.
                 _ = await Helper.run([
                     "lid-awake"
                 ] + args + [
                     "--force-battery",
+                    "--rearm",
                     helperApproved ? Helper.approvedHelperFlag : Helper.adminPromptFlag
                 ])
             }
@@ -380,11 +462,19 @@ final class AppCoordinator: ObservableObject {
         return args
     }
 
-    private static func enableArguments(feature: Feature, duration: Duration) -> [String] {
+    /// Build the `on --duration <preset> [--battery-floor <int>]` argument
+    /// suffix. The leading `<feature>` verb is prepended by the caller; the
+    /// trailing `--force-battery` / privilege flag is appended by the caller.
+    /// Caffeinate ignores `batteryFloor` even if a value is passed — the CLI
+    /// flag is lid-awake-only.
+    private static func enableArguments(feature: Feature, duration: Duration, batteryFloor: Int? = nil) -> [String] {
         var args = ["on", "--duration", duration.rawValue]
         switch feature {
         case .lidAwake:
             args.append("--force-battery")
+            if let batteryFloor {
+                args.append(contentsOf: ["--battery-floor", "\(batteryFloor)"])
+            }
         case .caffeinate:
             args.append("--force-battery")
         }
@@ -396,14 +486,18 @@ final class AppCoordinator: ObservableObject {
 /// unless the user enables the toggle (which calls `requestAuthorization`
 /// directly from the SwiftUI view's `onChange` handler).
 enum ExpiryNotifier {
-    static func notify(feature: Feature) async {
+    static func notify(
+        feature: Feature,
+        lastEndReason: StatsEvent.EndReason? = nil,
+        sleepStillDisabled: Bool = false
+    ) async {
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized else { return }
 
         let content = UNMutableNotificationContent()
         content.title = "Vigil"
-        content.body = "\(feature.displayName) ended."
+        content.body = body(for: feature, reason: lastEndReason, sleepStillDisabled: sleepStillDisabled)
         content.sound = .default
 
         let request = UNNotificationRequest(
@@ -412,6 +506,27 @@ enum ExpiryNotifier {
             trigger: nil
         )
         try? await center.add(request)
+    }
+
+    /// Notification body. Reason-aware AND restore-aware — when
+    /// `.batteryThreshold` fires but `sleepDisabled` is still true, the
+    /// agent's pmset-restore retry cap exhausted and the Mac is in a
+    /// stuck-pmset state. Lying about success would defeat the whole
+    /// point of the safety feature; surface the real state and point
+    /// the user at `vigil doctor`.
+    static func body(
+        for feature: Feature,
+        reason: StatsEvent.EndReason?,
+        sleepStillDisabled: Bool
+    ) -> String {
+        switch (feature, reason) {
+        case (.lidAwake, .batteryThreshold) where sleepStillDisabled:
+            return "Lid-Awake ended — power settings could not be restored. Run `vigil doctor`."
+        case (.lidAwake, .batteryThreshold):
+            return "Lid-Awake disabled — battery low."
+        default:
+            return "\(feature.displayName) ended."
+        }
     }
 
     /// Called from the SwiftUI Toggle's `onChange`. Requests

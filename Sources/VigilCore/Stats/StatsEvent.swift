@@ -83,6 +83,26 @@ public enum StatsEvent: Codable, Sendable, Equatable {
         /// rather than a user disable (which goes through the CLI's
         /// disable path and emits `.userDisabled`).
         case interrupted
+        /// Lid-Awake hit the user-configured battery floor while on battery
+        /// power. The agent restores the saved `pmset` profile, releases
+        /// assertions, and exits so the Mac can sleep normally instead of
+        /// running flat. One-way exit: AC restored afterward does not re-arm.
+        case batteryThreshold
+        /// Forward-compat sentinel: any raw value this binary does not
+        /// recognise decodes to `.unknown` rather than throwing. Without
+        /// this, `StatsLog.readAllUnsafe`'s `compactMap { try? ... }`
+        /// would silently drop the entire `sessionEnded` event from a
+        /// future binary's log line — leaving a permanent dangling
+        /// `sessionStarted` and breaking idempotency for that sessionID.
+        ///
+        /// NEVER emit `.unknown` — it exists only on the read side.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let raw = try container.decode(String.self)
+            self = EndReason(rawValue: raw) ?? .unknown
+        }
     }
 
     public var sessionID: UUID {
