@@ -52,7 +52,8 @@ enum Status {
                 totalLidClosedSeconds: Int(pf.totalLidClosedSeconds),
                 longestSessionSeconds: Int(pf.longestSessionSeconds),
                 lastEnabledAt: pf.lastEnabledAt,
-                danglingSessionCount: danglingCount
+                danglingSessionCount: danglingCount,
+                lastEndReason: pf.lastEndReason
             )
 
             return StatusReport.FeatureSnapshot(
@@ -146,6 +147,9 @@ enum Status {
                         print("  Remaining: \(remaining) seconds")
                     }
                 }
+                if let floor = session.batteryFloorPercent {
+                    print("  Battery floor: \(floor)%")
+                }
             } else {
                 print("  Enabled since: none")
             }
@@ -170,6 +174,9 @@ enum Status {
                 print("  Longest session: \(DurationFormat.compact(seconds: live.longestSessionSeconds))")
                 if let last = s.lastEnabledAt {
                     print("  Last enabled: \(ISO8601DateFormatter().string(from: last))")
+                }
+                if let reason = s.lastEndReason {
+                    print("  Last end reason: \(Self.formatEndReason(reason))")
                 }
             }
             if s.danglingSessionCount > 0 {
@@ -208,6 +215,20 @@ enum Status {
             print("")
             print("Power assertions:")
             print((try? Shell.run("/usr/bin/pmset", ["-g", "assertions"]).output) ?? "Unable to read assertions.")
+        }
+    }
+
+    /// Human-readable label for an `EndReason`. `.unknown` is the
+    /// forward-compat sentinel for raw values written by a future binary
+    /// that this binary does not recognise; surface it as "unknown" rather
+    /// than silently swallow it so the user has a breadcrumb.
+    private static func formatEndReason(_ reason: StatsEvent.EndReason) -> String {
+        switch reason {
+        case .userDisabled:     "user-disabled"
+        case .timerExpired:     "timer-expired"
+        case .interrupted:      "interrupted"
+        case .batteryThreshold: "battery-threshold"
+        case .unknown:          "unknown"
         }
     }
 }
