@@ -17,15 +17,17 @@ final class FeatureViewModel: ObservableObject {
     /// menu-app-scoped (it's the picker's remembered value).
     @AppStorage private var durationRawValue: String
 
-    /// Lid-Awake battery-floor toggle. Default-enabled at 20% so users get
-    /// the "don't run my Mac flat" safety net by default. The disclosure
-    /// surface for this is the always-visible caption on the
-    /// `BatteryFloorMenu` plus the battery-confirmation modal copy in
-    /// `AppCoordinator.turnOn` — together they make the default-on choice
-    /// defensible without a one-shot toast.
+    /// Lid-Awake battery-floor toggle. Default-enabled at 20% for Lid-Awake
+    /// (the "don't run my Mac flat" safety net is unambiguously safety-
+    /// positive for the unattended, closed-lid case). Default-DISABLED for
+    /// Caffeinate — Caffeinate is the "user is present" feature, so an
+    /// unexpected auto-disable mid-presentation would be more surprising
+    /// than helpful. Users can opt in per-feature via the toggle.
     ///
-    /// Only used for `.lidAwake`. Caffeinate ignores these values even if
-    /// the keys happen to exist (e.g. user-edited defaults plist).
+    /// The disclosure surface for this is the always-visible caption on the
+    /// `BatteryFloorMenu` plus (for Lid-Awake) the battery-confirmation
+    /// modal copy in `AppCoordinator.turnOn` — together they make the
+    /// default-on Lid-Awake choice defensible without a one-shot toast.
     @AppStorage private var batteryFloorEnabledRaw: Bool
     @AppStorage private var batteryFloorPercentRaw: Int
 
@@ -35,8 +37,11 @@ final class FeatureViewModel: ObservableObject {
             wrappedValue: Duration.indefinite.rawValue,
             "duration-\(feature.rawValue)"
         )
+        // Per-feature default: Lid-Awake on (unattended → safety), Caffeinate
+        // off (user-present → opt in).
+        let defaultEnabled = (feature == .lidAwake)
         self._batteryFloorEnabledRaw = AppStorage(
-            wrappedValue: true,
+            wrappedValue: defaultEnabled,
             "batteryFloor.\(feature.rawValue).enabled"
         )
         self._batteryFloorPercentRaw = AppStorage(
@@ -61,9 +66,9 @@ final class FeatureViewModel: ObservableObject {
     }
 
     /// The effective floor passed to the CLI on enable: `nil` when the
-    /// toggle is off OR when the feature is not lid-awake.
+    /// toggle is off. Applies to both Lid-Awake and Caffeinate.
     var effectiveBatteryFloor: Int? {
-        guard feature == .lidAwake, batteryFloorEnabled else { return nil }
+        guard batteryFloorEnabled else { return nil }
         return batteryFloorPercent
     }
 
@@ -393,6 +398,13 @@ final class AppCoordinator: ObservableObject {
             // the picker default for the *next* enable. This is what makes
             // a CLI-originated session (which never touched AppStorage)
             // round-trip correctly through a Sparkle relaunch.
+            //
+            // `--rearm` bypasses the CLI's at-or-below-floor pre-arm
+            // refusal so a session that's now below its floor (battery
+            // dropped while we were Sparkle-relaunching) still gets
+            // re-armed. The agent's immediate startup sample then fires
+            // a clean `.batteryThreshold` trip instead of orphaning the
+            // on-disk session record.
             let args = Self.enableArguments(
                 feature: snapshot.feature,
                 duration: session.duration,
@@ -400,18 +412,11 @@ final class AppCoordinator: ObservableObject {
             )
             switch snapshot.feature {
             case .caffeinate:
-                _ = await Helper.run(["caffeinate"] + args + ["--force-battery"])
+                _ = await Helper.run(["caffeinate"] + args + ["--rearm"])
             case .lidAwake:
-                // `--rearm` bypasses the CLI's pre-arm refusal so a session
-                // that's now at-or-below its floor (battery dropped while
-                // we were Sparkle-relaunching) still gets re-armed. The
-                // agent's immediate startup sample then fires a clean
-                // `.batteryThreshold` trip instead of orphaning the
-                // on-disk session record.
                 _ = await Helper.run([
                     "lid-awake"
                 ] + args + [
-                    "--force-battery",
                     "--rearm",
                     helperApproved ? Helper.approvedHelperFlag : Helper.adminPromptFlag
                 ])
@@ -465,18 +470,12 @@ final class AppCoordinator: ObservableObject {
     /// Build the `on --duration <preset> [--battery-floor <int>]` argument
     /// suffix. The leading `<feature>` verb is prepended by the caller; the
     /// trailing `--force-battery` / privilege flag is appended by the caller.
-    /// Caffeinate ignores `batteryFloor` even if a value is passed — the CLI
-    /// flag is lid-awake-only.
+    /// `batteryFloor` applies to both Lid-Awake and Caffeinate (the CLI
+    /// flag is feature-agnostic in 0.2.2).
     private static func enableArguments(feature: Feature, duration: Duration, batteryFloor: Int? = nil) -> [String] {
-        var args = ["on", "--duration", duration.rawValue]
-        switch feature {
-        case .lidAwake:
-            args.append("--force-battery")
-            if let batteryFloor {
-                args.append(contentsOf: ["--battery-floor", "\(batteryFloor)"])
-            }
-        case .caffeinate:
-            args.append("--force-battery")
+        var args = ["on", "--duration", duration.rawValue, "--force-battery"]
+        if let batteryFloor {
+            args.append(contentsOf: ["--battery-floor", "\(batteryFloor)"])
         }
         return args
     }
@@ -509,11 +508,15 @@ enum ExpiryNotifier {
     }
 
     /// Notification body. Reason-aware AND restore-aware — when
-    /// `.batteryThreshold` fires but `sleepDisabled` is still true, the
-    /// agent's pmset-restore retry cap exhausted and the Mac is in a
-    /// stuck-pmset state. Lying about success would defeat the whole
+    /// `.batteryThreshold` fires on Lid-Awake but `sleepDisabled` is still
+    /// true, the agent's pmset-restore retry cap exhausted and the Mac is
+    /// in a stuck-pmset state. Lying about success would defeat the whole
     /// point of the safety feature; surface the real state and point
     /// the user at `vigil doctor`.
+    ///
+    /// Caffeinate's `.batteryThreshold` path has no pmset to restore, so
+    /// the `sleepStillDisabled` branch doesn't apply — clean trip is the
+    /// only successful outcome.
     static func body(
         for feature: Feature,
         reason: StatsEvent.EndReason?,
@@ -524,6 +527,8 @@ enum ExpiryNotifier {
             return "Lid-Awake ended — power settings could not be restored. Run `vigil doctor`."
         case (.lidAwake, .batteryThreshold):
             return "Lid-Awake disabled — battery low."
+        case (.caffeinate, .batteryThreshold):
+            return "Caffeinate disabled — battery low."
         default:
             return "\(feature.displayName) ended."
         }
