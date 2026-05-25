@@ -1,143 +1,104 @@
 # Vigil
 
-> A macOS menu-bar app and CLI that keeps a Mac awake on demand. Two features, one app: keep the display + system awake while you're at it, or keep the machine fully awake with the lid closed for unattended long jobs.
+**Keep your Mac awake. On your terms.**
 
-<img alt="Vigil popover, collapsed and expanded views side-by-side" src="docs/assets/popover.png" />
+A native macOS menu-bar app that prevents your Mac from sleeping — whether you're running a long export, watching something with the lid open, or stepping away from your closed laptop while a download finishes. No terminal commands. No browser tab tricks. Just a toggle.
 
-## Features
+<p align="center">
+  <img src="docs/assets/popover-collapsed.png" alt="Vigil popover with Caffeinate and Lid-Awake both active" width="340" />
+  &nbsp;
+  <img src="docs/assets/popover-expanded.png" alt="Vigil popover with session and lifetime stats expanded" width="340" />
+</p>
 
-- **Caffeinate** — holds two IOKit power assertions (`PreventUserIdleSystemSleep` + `PreventUserIdleDisplaySleep`) to keep the display and system from idling to sleep. No `pmset`, no root, no privileged helper. Manual Apple-menu Sleep and lid close still send the Mac to sleep — by design.
+## Why Vigil
 
-- **Lid-Awake** — applies a reversible `pmset` profile (`disablesleep=1`, `sleep=0`, `disksleep=0`, `ttyskeepawake=1`, `tcpkeepalive=1`) and holds three IOKit power assertions including `PreventSystemSleep`. Keeps the Mac fully awake with the lid closed. Refuses to enable on battery without explicit confirmation. Requires one-time administrator approval (**Approve All**) to time-limit cleanly.
-
-Both features have a shared **time-limit dropdown** with eight presets: Indefinitely, 5 minutes, 10 minutes, 15 minutes, 30 minutes, 1 hour, 2 hours, 5 hours. When a timed session reaches its deadline the feature auto-disables and the system returns to its previous behaviour.
-
-Both features also support a **battery floor**: on battery power, auto-disable the feature once the battery drops to the configured percentage so the Mac can sleep normally instead of running flat. Defaults to **on at 20% for Lid-Awake** (the unattended-by-design case), **off for Caffeinate** (the user-is-present case). Configurable per-feature in the popover or via `--battery-floor <int>` on the CLI. Lid-Awake's floor requires `vigil approve-all`; Caffeinate's does not.
+- 🔋 **Won't run your battery flat.** A built-in low-battery floor auto-disables on battery so your Mac can sleep normally instead of dying mid-overnight.
+- ⏱️ **Timers that actually stop.** Pick a duration (5 minutes to 5 hours) and Vigil turns itself off when you said it would — even after a system sleep/wake cycle.
+- 💻 **Two modes, one app.** *Caffeinate* keeps your screen on while you're at your desk. *Lid-Awake* keeps your Mac fully running with the lid closed.
+- 🪶 **Lives in the menu bar.** A single SF Symbol that changes with state — sleeping moon when idle, glowing sun when both modes are armed. Quit the app; your timers keep running.
+- 📊 **Knows how long it's been on.** Per-session and lifetime stats — how long this session has run, total time awake across all sessions, longest session ever, total time with the lid closed.
+- 🔔 **Tells you when it's done.** Opt-in notification when a timer ends, so you don't come back to a session that quietly stopped an hour ago.
+- 🔄 **Updates itself.** Daily background check via Sparkle, signed by Apple's notary service. You're always one click away from the latest version.
 
 ## Install
 
-1. Download `Vigil-X.Y.Z.dmg` from [the latest release](https://github.com/dbuskariol/vigil/releases/latest).
-2. Open the DMG and drag `Vigil.app` to the `Applications` shortcut inside it.
-3. Open `Vigil.app` from `/Applications`. The menu-bar icon appears at the right of the status bar.
+1. Download **`Vigil-X.Y.Z.dmg`** from [the latest release](https://github.com/dbuskariol/vigil/releases/latest).
+2. Open the DMG and drag **`Vigil.app`** to the Applications shortcut.
+3. Open `Vigil.app` from `/Applications`. The menu-bar icon appears at the top right.
 
-(If you instead use the `.zip` artefact: unzip it and drag `Vigil.app` to `/Applications` **before opening it**. macOS Gatekeeper translocates apps launched from `~/Downloads` to a randomised quarantine path; Vigil refuses to enable while translocated.)
+> If you grabbed the `.zip` instead, drag `Vigil.app` to `/Applications` *before* opening it — macOS quarantines apps launched from Downloads, and Vigil refuses to enable from a quarantined path.
 
-Auto-updates check daily via Sparkle 2 with EdDSA signature verification. You can disable them in the Sparkle preferences dialog.
+## Use it
 
-## Use
+### From the menu bar
 
-From the menu bar:
+Click the icon to open the popover and toggle either feature:
 
-- Click the icon to open the popover with two feature cards.
-- Each card has its own toggle, duration dropdown, live countdown when armed with a timer, and an opt-in **Notify when timer ends** checkbox.
-- The **Approve All** banner (inside the Lid-Awake card) installs a scoped privileged helper so Lid-Awake can run without repeated password prompts. **Caffeinate works without approval.**
-- Click the small footer **stop.circle** button to turn off both features at once.
-- The Diagnostics disclosure (collapsed by default) shows the power source, lid state, battery, displays, keyboard backlight API status, and helper version.
-- Quitting Vigil leaves active features running in the background — both features are persistent user LaunchAgents. The Quit button's tooltip says so when something's active.
+- **Caffeinate** — keeps the display and system from idling to sleep. Manual Sleep and closing the lid still work as normal. Perfect for video playback, presentations, or a long compile.
+- **Lid-Awake** — keeps the Mac fully running with the lid closed. The first time you enable it, macOS asks for your administrator password so Vigil can set this up cleanly. After a one-time **Approve All**, it works without prompts.
 
-From the CLI (after `make install`):
+Each feature has its own duration menu (Indefinitely, 5/10/15/30 minutes, 1/2/5 hours), a "Notify when timer ends" checkbox, and a **Disable on low battery** toggle that auto-stops the feature once your battery drops to the chosen percentage on battery power.
+
+Open **Stats** in either card for live session and lifetime totals.
+
+### From the command line
+
+After `make install`:
 
 ```sh
-vigil status                              # human-readable status
-vigil status --json                       # machine-readable status
-vigil doctor                              # JSON + verbose human diagnostics
-vigil caffeinate on                       # indefinite caffeinate
-vigil caffeinate on --duration 1h         # 1-hour caffeinate
-vigil caffeinate on --battery-floor 15    # auto-disable at 15% on battery
+vigil caffeinate on                       # indefinite
+vigil caffeinate on --duration 1h         # one hour, auto-stop
+vigil caffeinate on --battery-floor 15    # stop at 15% on battery
 vigil caffeinate off
-vigil lid-awake on --duration 2h          # 2-hour lid-closed-awake
-vigil lid-awake on --battery-floor 20     # auto-disable at 20% on battery
+
+vigil lid-awake on --duration 2h          # two-hour closed-lid run
+vigil lid-awake on --battery-floor 20     # stop at 20% on battery
 vigil lid-awake off
-vigil approve-all
-vigil approval-status
+
+vigil status                              # human-readable status
+vigil status --json                       # machine-readable for scripts
+vigil doctor                              # full diagnostics
 ```
 
-`<duration>` is one of `indefinite | 5m | 10m | 15m | 30m | 1h | 2h | 5h`. Default: `indefinite`. `--battery-floor` accepts an integer 1–99 (applies to both features).
+Durations: `indefinite | 5m | 10m | 15m | 30m | 1h | 2h | 5h`. Battery floor: any integer 1–99.
 
-### What enable / disable actually do
+## Smart defaults
 
-Enabling **Lid-Awake** snapshots the current `pmset` profile, runs `pmset -a disablesleep 1 sleep 0 disksleep 0 ttyskeepawake 1 tcpkeepalive 1`, writes `~/Library/Application Support/Vigil/state-lid-awake.json`, touches `~/Library/Application Support/Vigil/sentinel-lid-awake`, installs `~/Library/LaunchAgents/com.vigil.app.lid-awake.plist`, and bootstraps it. The agent runs `vigil hold lid-awake --approved-helper`, which holds three IOKit assertions and polls lid state once per second so it can dim the display and keyboard backlight when the lid closes (configurable via the visual-options toggles on the Lid-Awake card).
+- **Lid-Awake refuses to start on battery without confirmation** — closed lid + battery is a heat trap. Click Turn On a second time if you really mean it, or pass `--force-battery` on the CLI.
+- **Lid-Awake ships with the battery floor on at 20%** — when you walk away from a closed lid, you almost certainly want the Mac to sleep rather than run dry. Lift the toggle if you don't.
+- **Caffeinate's battery floor is off by default** — you're at your desk; auto-disabling mid-presentation would be more annoying than helpful. Flip it on per session if you want it.
+- **The battery-floor trip is one-way.** If Vigil disables itself because the battery hit 20%, plugging back into power doesn't silently re-arm it. You stay in control.
+- **Vigil keeps running when you quit it.** Both features are backed by macOS LaunchAgents, so quitting the menu-bar app doesn't stop your in-flight timer or low-battery monitor.
 
-Disabling Lid-Awake (or hitting its timer deadline) restores the saved `pmset` profile, removes the sentinel and session files, and tears down the LaunchAgent.
+## Stays out of the way
 
-Enabling **Caffeinate** writes `~/Library/Application Support/Vigil/state-caffeinate.json`, touches `~/Library/Application Support/Vigil/sentinel-caffeinate`, installs `~/Library/LaunchAgents/com.vigil.app.caffeinate.plist`, and bootstraps it. The agent runs `vigil hold caffeinate`, which holds two IOKit assertions. No `pmset`, no privileges, no helper.
+The menu-bar icon switches between four SF Symbols depending on state — sleeping moon when idle, eye when Caffeinate is active, laptop when Lid-Awake is active, sun when both are. A tiny orange dot tells you when setup needs attention. That's it. No notification spam, no analytics, no telemetry beyond Sparkle's daily update check (which sends only `User-Agent: Sparkle/… Vigil/X.Y.Z` and your IP to GitHub).
 
-Disabling Caffeinate removes the sentinel and session files, and tears down the LaunchAgent.
+## Under the hood (for the curious)
 
-### Login Items
+Vigil holds Apple's standard IOKit power assertions to keep the system awake, plus — for Lid-Awake — a temporary, reversible `pmset` profile to keep the Mac running with the lid closed. When you turn a feature off (or its timer expires, or the battery floor trips), Vigil restores the exact `pmset` state it captured at enable time.
 
-Both feature LaunchAgents associate with `com.vigil.app`, so macOS System Settings → General → Login Items shows **one** "Vigil" entry that toggles both background agents together. The per-feature on/off lives in the Vigil popover; the System Settings toggle is the user-visible escape hatch.
+- The menu-bar app is a pure controller — it shells out to the bundled `vigil` CLI for every action.
+- Active features survive menu-app quit, Sparkle updates, and admin password sheets by running as per-feature user LaunchAgents.
+- Lid-Awake needs administrator rights (only for the `pmset` profile); Caffeinate needs nothing.
+- After one-time **Approve All**, Lid-Awake works without password prompts via a narrowly-scoped sudoers rule limited to `pmset` with an in-binary argument allowlist.
 
-## How it works
-
-Vigil is structured as three Mach-Os: the SwiftUI **menu app** (`VigilMenuBar`), the **CLI** (`vigil`, embedded in `Vigil.app/Contents/Resources/vigil`), and on demand a root-owned copy of that same CLI at `/Library/PrivilegedHelperTools/com.vigil.app.helper`.
-
-The menu app does not hold IOKit assertions itself. It is a pure controller: it shells out to the bundled CLI for every action, and decodes `vigil status --json` for every read. Active features survive menu-app quit because the assertions are held by per-feature **user LaunchAgents** that launchd keeps alive while a per-feature sentinel file exists.
-
-Vigil also reads private IOKit power-domain state for diagnostics (`SleepDisabled`, `AppleClamshellState`, `AppleClamshellCausesSleep`) and uses private Apple APIs (`CoreDisplay`, `DisplayServices`, `CoreBrightness`) for display / keyboard backlight control during Lid-Awake. This design is intentionally not App Store-safe. The goal is reliable awake-on-demand operation, not Apple review.
-
-For the full design rationale see [`docs/0.2.0-design.md`](docs/0.2.0-design.md) (foundational architecture) and [`docs/0.2.2-design.md`](docs/0.2.2-design.md) (Lid-Awake battery floor).
-
-## Trust model
-
-Vigil takes administrator privileges in two ways, both **only for Lid-Awake** (Caffeinate uses no privileged ops):
-
-1. **One-time `Approve All` flow.** The menu app runs `do shell script with administrator privileges` (`NSAppleScript` + macOS SecurityAgent). The privileged shell installs the `vigil` CLI to `/Library/PrivilegedHelperTools/com.vigil.app.helper` (root-owned, `0755`) and writes a sudoers drop-in at `/etc/sudoers.d/vigil-<uid>` (root-owned, `0440`, validated with `visudo -cf`). The sudoers rule is intentionally narrow:
-
-   ```
-   <user> ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/com.vigil.app.helper privileged-pmset-batch *, /Library/PrivilegedHelperTools/com.vigil.app.helper approval-status, /Library/PrivilegedHelperTools/com.vigil.app.helper privileged-version, /Library/PrivilegedHelperTools/com.vigil.app.helper privileged-ipc-version
-   ```
-
-   Four verbs only: a `pmset` batch (with an in-binary allowlist of `disablesleep`, `sleep`, `disksleep`, `ttyskeepawake`, `tcpkeepalive`), an `approval-status` probe, a `privileged-version` probe, and a `privileged-ipc-version` probe used for IPC-contract handshake. The allowlist is enforced inside the helper (see `Sources/vigil/Privilege.swift`'s `argumentsAreAllowedPMSetBatch`), so the `privileged-pmset-batch *` sudoers entry is still bounded.
-
-   **Time-limited Lid-Awake requires approval** so that when the timer expires the agent can restore the saved `pmset` profile non-interactively. Indefinite Lid-Awake still works without approval — the user disables it manually via the standard administrator-password sheet.
-
-2. **Ad-hoc `do shell script` prompt** when `Approve All` has not been run yet. Each Lid-Awake on/off shows the standard macOS administrator-password sheet.
-
-**Caffeinate uses neither.** `IOPMAssertionCreateWithName` is unprivileged.
-
-Auto-updates land via Sparkle 2 from a stable URL: `https://github.com/dbuskariol/vigil/releases/latest/download/appcast.xml`. The appcast is EdDSA-signed; the public key is baked into `Info.plist` (`SUPublicEDKey`). Sparkle refuses to install any update whose signature doesn't verify.
-
-After a Sparkle update, Vigil's menu app probes the helper's IPC contract version against the version this build of the menu app expects. They are only re-prompted to re-approve when the privileged IPC contract surface actually changes (sudoers verbs added/removed, in-binary `pmset` allowlist changed, or `privileged-pmset-batch` wire format changed) — NOT on every routine bug-fix release. Both feature LaunchAgents are also booted out before the install (so the new CLI Mach-O can replace the old in place) and re-bootstrapped automatically on relaunch for any feature whose session is still within its window.
-
-Update checks send a `User-Agent: Sparkle/… Vigil/X.Y.Z` header plus your IP to GitHub on a daily schedule. No other system information is collected (`SUEnableSystemProfiling` is off).
+Full design rationale lives in [`docs/0.2.0-design.md`](docs/0.2.0-design.md) (foundational architecture) and [`docs/0.2.2-design.md`](docs/0.2.2-design.md) (battery floor design + dual-model consensus notes). Security policy is in [`SECURITY.md`](SECURITY.md).
 
 ## Build from source
 
-Local ad-hoc dev build:
-
 ```sh
-make app
+make app                # ad-hoc signed local build
 open dist/Vigil.app
-```
 
-CLI only:
-
-```sh
-swift build -c release
+swift build -c release  # CLI only
 .build/release/vigil status
+
+sudo make install       # install the CLI to /usr/local/bin/vigil
 ```
 
-Install the CLI globally:
-
-```sh
-sudo make install     # -> /usr/local/bin/vigil
-sudo make uninstall
-```
-
-Release builds (Developer ID + hardened runtime + Sparkle keys) are maintainer-only; see `RELEASING.md`.
-
-## Safety
-
-Closed-lid Lid-Awake operation can trap heat. Keep the machine ventilated and prefer AC power. By default, `vigil lid-awake on` refuses to enable while running on battery power; pass `--force-battery` to override (or click **Turn On** a second time in the menu app to confirm).
-
-For unattended battery use, set a **battery floor** so the feature disables itself before the Mac runs flat: `--battery-floor <int>` on the CLI (1–99), or the **Disable on low battery** toggle in each feature's card in the popover.
-
-- **Lid-Awake**: default **on** at 20%. Requires `vigil approve-all` so the agent can restore the pmset profile non-interactively. On trip, the agent restores the saved `pmset` profile and exits.
-- **Caffeinate**: default **off** (Caffeinate is the user-present case; auto-disable mid-task would surprise). Enable per-session if you want the safety net. No `pmset`, no helper requirement — the agent just releases its IOKit assertions and exits.
-
-In both cases the trip is one-way — plugging AC back in does not auto-re-enable the feature.
+Release builds (Developer ID + hardened runtime + notarization + Sparkle keys) are maintainer-only; see [`RELEASING.md`](RELEASING.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [`LICENSE`](LICENSE).
